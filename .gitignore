@@ -1,0 +1,27 @@
+# Secrets
+.env
+
+# Python
+backend/.venv/
+backend/venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Node / Hardhat
+contracts/node_modules/
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+npm-debug.log*
+
+# Uploaded/scratch images from local pipeline runs
+backend/uploads/
+backend/scratch/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
