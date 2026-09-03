@@ -3,30 +3,47 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Face &rarr; Reverse Search &rarr; Blockchain Verification</title>
+  <title>Was This You?</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <main class="wrap">
-    <h1>Face &rarr; Reverse Search &rarr; Blockchain Verification</h1>
-    <p class="subtitle">Upload a photo. A real reverse image search finds a matching post, and its fingerprint is written to and re-verified against a local blockchain &mdash; live, no mocked steps.</p>
+    <h1>Was This You?</h1>
+    <p class="tagline">Find where a photo has been reused, and prove whether the record still matches.</p>
 
-    <form id="upload-form">
-      <input type="file" id="file-input" accept="image/*" required />
-      <label class="auto-toggle">
-        <input type="checkbox" id="auto-toggle" />
-        Auto-select top match (skip manual pick)
+    <form id="upload-form" class="upload-card">
+      <label class="dropzone" for="file-input" id="dropzone">
+        <img id="preview-img" class="preview-img" hidden alt="Selected photo preview" />
+        <span id="dropzone-text" class="dropzone-text">Choose a photo to check</span>
       </label>
-      <button type="submit">Run pipeline</button>
+      <input type="file" id="file-input" accept="image/*" required hidden />
+      <button type="submit" id="submit-btn"><span id="submit-label">Start verification</span></button>
     </form>
 
     <div id="error-banner" class="error-banner" hidden></div>
 
-    <section id="stages" class="stages"></section>
+    <div id="step-indicator" class="step-indicator" hidden>
+      <span class="step" data-step="face">Face Scan</span>
+      <span class="step" data-step="web">Web Search</span>
+      <span class="step" data-step="chain">Blockchain</span>
+    </div>
 
-    <section id="candidates" class="candidates" hidden></section>
+    <section id="trace" class="trace"></section>
 
-    <section id="result" class="result" hidden></section>
+    <section id="reverify-panel" class="reverify-panel" hidden>
+      <h2>Re-verify</h2>
+      <p class="reverify-hint">Edit the source URL or caption below to simulate tampering, then re-verify against the blockchain record independently.</p>
+      <label class="field">
+        <span>Source URL</span>
+        <input type="text" id="reverify-url" />
+      </label>
+      <label class="field">
+        <span>Caption</span>
+        <textarea id="reverify-caption" rows="2"></textarea>
+      </label>
+      <button type="button" id="reverify-btn">Re-verify</button>
+      <div id="reverify-result" class="reverify-result"></div>
+    </section>
   </main>
 
   <script src="/app.js"></script>

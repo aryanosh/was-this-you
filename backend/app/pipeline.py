@@ -191,5 +191,8 @@ async def run_process_match(match: dict) -> AsyncIterator[dict]:
             "combined_hash": fingerprint.combined_hash,
             "chain_result": chain_result,
             "verified": verified,
+            "recomputed_image_hash": recomputed.image_hash,
+            "recomputed_combined_hash": recomputed.combined_hash,
+            "on_chain_record": record,
         },
     )

@@ -1,10 +1,17 @@
 const form = document.getElementById("upload-form");
 const fileInput = document.getElementById("file-input");
-const autoToggle = document.getElementById("auto-toggle");
-const stagesEl = document.getElementById("stages");
-const candidatesEl = document.getElementById("candidates");
-const resultEl = document.getElementById("result");
+const previewImg = document.getElementById("preview-img");
+const dropzoneText = document.getElementById("dropzone-text");
+const submitBtn = document.getElementById("submit-btn");
+const submitLabel = document.getElementById("submit-label");
+const traceEl = document.getElementById("trace");
 const errorBanner = document.getElementById("error-banner");
+const stepIndicatorEl = document.getElementById("step-indicator");
+const reverifyPanel = document.getElementById("reverify-panel");
+const reverifyUrlInput = document.getElementById("reverify-url");
+const reverifyCaptionInput = document.getElementById("reverify-caption");
+const reverifyBtn = document.getElementById("reverify-btn");
+const reverifyResultEl = document.getElementById("reverify-result");
 
 function showError(message) {
   console.error("[pipeline]", message);
@@ -17,42 +24,252 @@ function clearError() {
   errorBanner.textContent = "";
 }
 
-const STAGES = [
-  { id: "detect", label: "Detecting face" },
-  { id: "search", label: "Searching the web for matching posts" },
-  { id: "fetch", label: "Fetching matched content" },
-  { id: "fingerprint", label: "Computing SHA-256 fingerprint" },
-  { id: "chain_submit", label: "Uploading fingerprint to the blockchain" },
-  { id: "reverify", label: "Independently re-verifying on-chain record" },
-];
-
-const ICONS = { pending: "○", running: "…", done: "✓", error: "✕", skipped: "–" };
-
-function renderStages() {
-  stagesEl.innerHTML = STAGES.map(
-    (s) => `
-    <div class="stage" id="stage-${s.id}">
-      <span class="stage-icon" id="icon-${s.id}">${ICONS.pending}</span>
-      <span class="stage-label">${s.label}</span>
-      <span class="stage-detail" id="detail-${s.id}"></span>
-    </div>`
-  ).join("");
-}
-
-function updateStage(stage, status, message) {
-  const row = document.getElementById(`stage-${stage}`);
-  const icon = document.getElementById(`icon-${stage}`);
-  const detail = document.getElementById(`detail-${stage}`);
-  if (!row) return;
-  row.classList.remove("running", "done", "error", "skipped");
-  row.classList.add(status);
-  icon.textContent = ICONS[status] || ICONS.pending;
-  detail.textContent = message || "";
-}
-
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
+function hostnameOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url || "";
+  }
+}
+
+function formatTimestamp(unixSeconds) {
+  try {
+    return new Date(Number(unixSeconds) * 1000).toLocaleString();
+  } catch {
+    return String(unixSeconds);
+  }
+}
+
+// ---- File preview -------------------------------------------------------
+
+fileInput.addEventListener("change", () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  previewImg.src = url;
+  previewImg.hidden = false;
+  dropzoneText.textContent = file.name;
+});
+
+// ---- Step indicator (3 broad phases, derived from the 6 fine-grained stages) ----
+
+const STAGE_GROUP = {
+  detect: "face",
+  search: "web",
+  fetch: "chain",
+  fingerprint: "chain",
+  chain_submit: "chain",
+  reverify: "chain",
+};
+const STEP_ORDER = ["face", "web", "chain"];
+
+function resetStepIndicator() {
+  STEP_ORDER.forEach((s) => {
+    const el = stepIndicatorEl.querySelector(`.step[data-step="${s}"]`);
+    el.classList.remove("active", "done");
+  });
+  stepIndicatorEl.hidden = false;
+}
+
+function markStepActive(stage) {
+  const group = STAGE_GROUP[stage];
+  if (!group) return;
+  const idx = STEP_ORDER.indexOf(group);
+  STEP_ORDER.forEach((s, i) => {
+    const el = stepIndicatorEl.querySelector(`.step[data-step="${s}"]`);
+    el.classList.remove("active", "done");
+    if (i < idx) el.classList.add("done");
+    else if (i === idx) el.classList.add("active");
+  });
+}
+
+function markAllStepsDone() {
+  STEP_ORDER.forEach((s) => {
+    const el = stepIndicatorEl.querySelector(`.step[data-step="${s}"]`);
+    el.classList.remove("active");
+    el.classList.add("done");
+  });
+}
+
+// ---- Trace log (append-only chain of thought) ---------------------------
+
+const STAGE_ORDER = ["detect", "search", "fetch", "fingerprint", "chain_submit", "reverify"];
+
+const RUNNING_TEXT = {
+  detect: "Detecting the face in the photo…",
+  search: "Searching the web for matching posts…",
+  fetch: "Fetching the matched post's content…",
+  fingerprint: "Computing a SHA-256 fingerprint…",
+  chain_submit: "Writing the fingerprint to the blockchain…",
+  reverify: "Independently re-verifying the on-chain record…",
+};
+
+const MARKERS = {
+  running: '<span class="spinner" aria-hidden="true"></span>',
+  done: "✓",
+  error: "✕",
+  skipped: "–",
+};
+
+function entryEl(stage) {
+  return document.getElementById(`entry-${stage}`);
+}
+
+function appendEntry(stage, text) {
+  const div = document.createElement("div");
+  div.className = "trace-entry state-running";
+  div.id = `entry-${stage}`;
+  div.innerHTML = `
+    <div class="trace-line">
+      <span class="marker">${MARKERS.running}</span>
+      <span class="trace-text">${escapeHtml(text ?? RUNNING_TEXT[stage] ?? stage)}</span>
+    </div>
+    <div class="trace-detail"></div>
+  `;
+  traceEl.appendChild(div);
+  return div;
+}
+
+function settleEntry(stage, state, text, detailHtml) {
+  const entry = entryEl(stage) || appendEntry(stage);
+  entry.classList.remove("state-running", "state-done", "state-error", "state-skipped");
+  entry.classList.add(`state-${state}`);
+  entry.querySelector(".marker").innerHTML = MARKERS[state] || "";
+  entry.querySelector(".trace-text").textContent = text;
+  if (detailHtml !== undefined) {
+    entry.querySelector(".trace-detail").innerHTML = detailHtml;
+  }
+}
+
+function settleUploadEntryIfPresent() {
+  const entry = document.getElementById("entry-upload");
+  if (!entry || !entry.classList.contains("state-running")) return;
+  entry.classList.remove("state-running");
+  entry.classList.add("state-done");
+  entry.querySelector(".marker").innerHTML = MARKERS.done;
+  entry.querySelector(".trace-text").textContent = "Photo uploaded.";
+}
+
+function doneText(stage, data) {
+  switch (stage) {
+    case "detect":
+      return data.num_faces === 1 ? "Detected 1 face." : `Detected ${data.num_faces} faces; searching with the whole image.`;
+    case "search":
+      return `Found ${data.num_matches} matching post${data.num_matches === 1 ? "" : "s"}. Using the top result.`;
+    case "fetch":
+      return `Fetched the image and page metadata from ${hostnameOf(data.source_url)}.`;
+    case "fingerprint":
+      return "Fingerprint computed.";
+    case "chain_submit":
+      return `Registered on-chain — block ${data.block_number}.`;
+    case "reverify":
+      return data.verified ? "Recomputed hash matches the on-chain record." : "Recomputed hash does not match any on-chain record.";
+    default:
+      return "Done.";
+  }
+}
+
+function matchDetailHtml(match, total) {
+  const thumb = match.thumbnail || match.image || "";
+  const title = match.title || match.source || "Untitled";
+  const source = match.source || hostnameOf(match.link);
+  const rank = match.position ? `Match ${match.position} of ${total}` : `Top of ${total} matches`;
+  return `
+    <div class="trace-match">
+      ${thumb ? `<img src="${escapeHtml(thumb)}" alt="" loading="lazy" />` : ""}
+      <div class="trace-match-body">
+        <a href="${escapeHtml(match.link || "#")}" target="_blank" rel="noopener">${escapeHtml(title)}</a>
+        <div class="trace-match-source">${escapeHtml(source)}</div>
+        <div class="trace-match-rank">${escapeHtml(rank)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function fingerprintDetailHtml(data) {
+  return `<div class="hash-line"><span>Combined hash</span><code>${escapeHtml(data.combined_hash)}</code></div>`;
+}
+
+function chainSubmitDetailHtml(data) {
+  return `<div class="hash-line"><span>Tx hash</span><code>${escapeHtml(data.tx_hash)}</code></div>`;
+}
+
+function verdictDetailHtml(data) {
+  const verified = data.verified;
+  const record = data.on_chain_record;
+  const post = data.matched_post || {};
+  return `
+    <div class="hash-compare">
+      <div class="hash-line"><span>Fingerprint (this run)</span><code>${escapeHtml(data.combined_hash)}</code></div>
+      <div class="hash-line"><span>Recomputed just now</span><code>${escapeHtml(data.recomputed_combined_hash)}</code></div>
+    </div>
+    ${
+      record
+        ? `<div class="hash-line"><span>Recorded on-chain</span><span>${escapeHtml(formatTimestamp(record.timestamp))} by <code>${escapeHtml(record.submitter)}</code></span></div>`
+        : `<div class="hash-line"><span>On-chain record</span><span>none found for the recomputed hash</span></div>`
+    }
+    ${post.url ? `<div class="hash-line"><span>Matched post</span><a href="${escapeHtml(post.url)}" target="_blank" rel="noopener">${escapeHtml(post.title || post.url)}</a></div>` : ""}
+    <div class="verdict-word ${verified ? "verified" : "mismatch"}">${verified ? "VERIFIED" : "MISMATCH"}</div>
+  `;
+}
+
+// ---- Re-verify panel ------------------------------------------------------
+
+let fetchedMeta = null; // { image_url, source_url, caption, scraped_at }
+
+function showReverifyPanel(originalCombinedHash) {
+  if (!fetchedMeta) return;
+  reverifyUrlInput.value = fetchedMeta.source_url || "";
+  reverifyCaptionInput.value = fetchedMeta.caption || "";
+  reverifyResultEl.innerHTML = "";
+  reverifyPanel.hidden = false;
+  reverifyPanel.dataset.originalHash = originalCombinedHash || "";
+}
+
+function renderReverifyResult(data) {
+  const verified = data.verified;
+  reverifyResultEl.innerHTML = `
+    <div class="hash-line"><span>Recomputed hash</span><code>${escapeHtml(data.recomputed_combined_hash)}</code></div>
+    ${
+      data.on_chain_record
+        ? `<div class="hash-line"><span>Recorded on-chain</span><span>${escapeHtml(formatTimestamp(data.on_chain_record.timestamp))} by <code>${escapeHtml(data.on_chain_record.submitter)}</code></span></div>`
+        : `<div class="hash-line"><span>On-chain record</span><span>${escapeHtml(data.mismatch_reason || "none found for this hash")}</span></div>`
+    }
+    <div class="verdict-word ${verified ? "verified" : "mismatch"}">${verified ? "VERIFIED" : "MISMATCH"}</div>
+  `;
+}
+
+reverifyBtn.addEventListener("click", async () => {
+  if (!fetchedMeta) return;
+  reverifyBtn.disabled = true;
+  reverifyResultEl.innerHTML = '<span class="spinner" aria-hidden="true"></span> Re-verifying…';
+  try {
+    const resp = await fetch("/api/reverify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_url: fetchedMeta.image_url,
+        source_url: reverifyUrlInput.value,
+        caption: reverifyCaptionInput.value,
+        scraped_at: fetchedMeta.scraped_at,
+      }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(body.detail || `HTTP ${resp.status}`);
+    renderReverifyResult(body);
+  } catch (err) {
+    showError(`Re-verify failed: ${err.message}`);
+    reverifyResultEl.textContent = "";
+  } finally {
+    reverifyBtn.disabled = false;
+  }
+});
+
+// ---- Streaming ------------------------------------------------------------
 
 async function streamPipeline(url, options, onEvent) {
   const resp = await fetch(url, options);
@@ -101,123 +318,103 @@ async function streamPipeline(url, options, onEvent) {
   if (rest) handleLine(rest);
 }
 
-let currentMatches = [];
+function handleStageEvent(evt) {
+  console.log("[pipeline] event", evt.stage, evt.status);
+  const { stage, status, data, message, label } = evt;
 
-// Delegated listener attached once, at module load -- survives every
-// candidatesEl.innerHTML replacement in renderCandidates, so there's no
-// per-render attachment step that could be skipped or land on the wrong
-// (already-replaced) nodes.
-candidatesEl.addEventListener("click", (e) => {
-  const card = e.target.closest(".candidate");
-  if (!card || !candidatesEl.contains(card)) return;
-  const idx = parseInt(card.dataset.index, 10);
-  const match = currentMatches[idx];
-  if (!match) {
-    showError(`Clicked candidate index ${idx} but no matching data was found (had ${currentMatches.length} candidates).`);
+  if (stage === "complete") {
+    if (status === "done") {
+      settleEntry("reverify", "done", doneText("reverify", data), verdictDetailHtml(data));
+      markAllStepsDone();
+      showReverifyPanel(data.combined_hash);
+    }
     return;
   }
-  candidatesEl.hidden = true;
-  processMatch(match).catch((err) => showError(`Failed to process the selected match: ${err.message}`));
-});
 
-function renderCandidates(matches) {
-  currentMatches = matches;
-  candidatesEl.hidden = false;
-  candidatesEl.innerHTML =
-    "<h3>Pick a match</h3><div class=\"candidate-grid\">" +
-    matches
-      .map(
-        (m, i) => `
-      <div class="candidate" data-index="${i}">
-        <img src="${escapeHtml(m.thumbnail || m.image || "")}" alt="" loading="lazy" />
-        <div class="candidate-title">${escapeHtml(m.title || m.source || "Untitled")}</div>
-        <div class="candidate-source">${escapeHtml(m.source || "")}</div>
-      </div>`
-      )
-      .join("") +
-    "</div>";
-}
+  if (!STAGE_ORDER.includes(stage)) return;
 
-function renderResult(data) {
-  resultEl.hidden = false;
-  const verified = data.verified;
-  const post = data.matched_post || {};
-  resultEl.innerHTML = `
-    <h3>Result</h3>
-    <div class="result-card ${verified ? "verified" : "mismatch"}">
-      <img class="result-thumb" src="${escapeHtml(post.thumbnail || "")}" alt="" />
-      <div class="result-body">
-        <a href="${escapeHtml(post.url || "#")}" target="_blank" rel="noopener">${escapeHtml(post.title || post.url || "Matched post")}</a>
-        <div class="result-source">${escapeHtml(post.source || "")}</div>
-        <div class="hash-row"><span>Image hash</span><code>${escapeHtml(data.image_hash)}</code></div>
-        <div class="hash-row"><span>Combined hash</span><code>${escapeHtml(data.combined_hash)}</code></div>
-        ${
-          data.chain_result
-            ? `<div class="hash-row"><span>Tx hash</span><code>${escapeHtml(data.chain_result.tx_hash)}</code></div>
-               <div class="hash-row"><span>Block number</span><code>${escapeHtml(data.chain_result.block_number)}</code></div>`
-            : `<div class="hash-row"><span>Chain</span><span>Already registered from a prior run; verified against the existing record.</span></div>`
-        }
-        <div class="badge ${verified ? "badge-verified" : "badge-mismatch"}">${verified ? "VERIFIED" : "MISMATCH"}</div>
-      </div>
-    </div>
-  `;
+  if (status === "running") {
+    settleUploadEntryIfPresent();
+    markStepActive(stage);
+    appendEntry(stage);
+    return;
+  }
+  if (stage === "fetch" && status === "done") {
+    fetchedMeta = {
+      image_url: data.image_url,
+      source_url: data.source_url,
+      caption: data.caption,
+      scraped_at: data.scraped_at,
+    };
+  }
+  if (status === "error") {
+    settleEntry(stage, "error", message || `"${label}" failed.`, "");
+    showError(`Pipeline stopped at "${label}": ${message || "unknown error"}`);
+    return;
+  }
+  if (status === "skipped") {
+    settleEntry(stage, "skipped", message || `"${label}" skipped.`, "");
+    return;
+  }
+  if (status === "done") {
+    let detailHtml = "";
+    if (stage === "search") detailHtml = matchDetailHtml(data.matches[0], data.num_matches);
+    if (stage === "fingerprint") detailHtml = fingerprintDetailHtml(data);
+    if (stage === "chain_submit") detailHtml = chainSubmitDetailHtml(data);
+    settleEntry(stage, "done", doneText(stage, data), detailHtml);
+  }
 }
 
 async function processMatch(match) {
   console.log("[pipeline] processMatch starting for", match && match.link);
-  let finalData = null;
   try {
     await streamPipeline(
       "/api/pipeline/process-match",
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(match) },
-      (evt) => {
-        console.log("[pipeline] event", evt.stage, evt.status);
-        updateStage(evt.stage, evt.status, evt.message);
-        if (evt.status === "error") showError(`Pipeline stopped at "${evt.label}": ${evt.message || "unknown error"}`);
-        if (evt.stage === "complete" && evt.status === "done") finalData = evt.data;
-      }
+      handleStageEvent
     );
   } catch (err) {
     showError(`Request to process the selected match failed: ${err.message}`);
-    return;
   }
-  if (finalData) renderResult(finalData);
+}
+
+function setBusy(busy) {
+  submitBtn.disabled = busy;
+  submitLabel.innerHTML = busy ? '<span class="spinner" aria-hidden="true"></span> Starting…' : "Start verification";
 }
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   clearError();
-  resultEl.hidden = true;
-  candidatesEl.hidden = true;
-  candidatesEl.innerHTML = "";
-  currentMatches = [];
-  renderStages();
+  traceEl.innerHTML = "";
+  reverifyPanel.hidden = true;
+  fetchedMeta = null;
+  resetStepIndicator();
 
   const file = fileInput.files[0];
   if (!file) return;
   const fd = new FormData();
   fd.append("file", file);
 
-  let matches = [];
+  setBusy(true);
+  appendEntry("upload", "Uploading photo…");
+
+  let topMatch = null;
   try {
     await streamPipeline("/api/pipeline/detect-and-search", { method: "POST", body: fd }, (evt) => {
-      console.log("[pipeline] event", evt.stage, evt.status);
-      updateStage(evt.stage, evt.status, evt.message);
-      if (evt.status === "error") showError(`Pipeline stopped at "${evt.label}": ${evt.message || "unknown error"}`);
-      if (evt.stage === "search" && evt.status === "done") matches = evt.data.matches;
+      handleStageEvent(evt);
+      if (evt.stage === "search" && evt.status === "done") topMatch = evt.data.matches[0];
     });
   } catch (err) {
     showError(`Request failed: ${err.message}`);
+    setBusy(false);
     return;
   }
 
-  if (!matches.length) return;
-
-  if (autoToggle.checked) {
-    await processMatch(matches[0]);
-  } else {
-    renderCandidates(matches);
+  if (!topMatch) {
+    setBusy(false);
+    return;
   }
+  await processMatch(topMatch);
+  setBusy(false);
 });
-
-renderStages();
