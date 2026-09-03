@@ -160,8 +160,11 @@ function doneText(stage, data) {
       return data.num_faces === 1 ? "Detected 1 face." : `Detected ${data.num_faces} faces; searching with the whole image.`;
     case "search":
       return `Found ${data.num_matches} matching post${data.num_matches === 1 ? "" : "s"}. Using the top result.`;
-    case "fetch":
-      return `Fetched the image and page metadata from ${hostnameOf(data.source_url)}.`;
+    case "fetch": {
+      const skipped = (data.attempts_tried || 1) - 1;
+      const suffix = skipped > 0 ? ` (after skipping ${skipped} unreachable match${skipped === 1 ? "" : "es"})` : "";
+      return `Fetched the image and page metadata from ${hostnameOf(data.source_url)}${suffix}.`;
+    }
     case "fingerprint":
       return "Fingerprint computed.";
     case "chain_submit":
@@ -331,6 +334,22 @@ function handleStageEvent(evt) {
     return;
   }
 
+  if (stage === "fetch_attempt") {
+    if (status === "skipped") {
+      const div = document.createElement("div");
+      div.className = "trace-entry state-skipped trace-entry-minor";
+      div.id = `entry-fetch-attempt-${data.attempt}`;
+      div.innerHTML = `
+        <div class="trace-line">
+          <span class="marker">${MARKERS.skipped}</span>
+          <span class="trace-text">Match ${data.attempt} of ${data.total}${data.source ? ` (${escapeHtml(data.source)})` : ""} was unreachable — trying the next one.</span>
+        </div>
+      `;
+      traceEl.appendChild(div);
+    }
+    return;
+  }
+
   if (!STAGE_ORDER.includes(stage)) return;
 
   if (status === "running") {
@@ -365,12 +384,12 @@ function handleStageEvent(evt) {
   }
 }
 
-async function processMatch(match) {
-  console.log("[pipeline] processMatch starting for", match && match.link);
+async function processMatch(matches) {
+  console.log("[pipeline] processMatch starting with", matches.length, "candidates");
   try {
     await streamPipeline(
       "/api/pipeline/process-match",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(match) },
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(matches) },
       handleStageEvent
     );
   } catch (err) {
@@ -399,11 +418,11 @@ form.addEventListener("submit", async (e) => {
   setBusy(true);
   appendEntry("upload", "Uploading photo…");
 
-  let topMatch = null;
+  let allMatches = null;
   try {
     await streamPipeline("/api/pipeline/detect-and-search", { method: "POST", body: fd }, (evt) => {
       handleStageEvent(evt);
-      if (evt.stage === "search" && evt.status === "done") topMatch = evt.data.matches[0];
+      if (evt.stage === "search" && evt.status === "done") allMatches = evt.data.matches;
     });
   } catch (err) {
     showError(`Request failed: ${err.message}`);
@@ -411,10 +430,10 @@ form.addEventListener("submit", async (e) => {
     return;
   }
 
-  if (!topMatch) {
+  if (!allMatches || !allMatches.length) {
     setBusy(false);
     return;
   }
-  await processMatch(topMatch);
+  await processMatch(allMatches);
   setBusy(false);
 });

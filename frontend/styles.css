@@ -137,6 +137,9 @@ button:disabled { opacity: 0.7; cursor: default; }
 .trace-entry.state-skipped .marker { color: #9a8b3f; }
 .trace-entry.state-skipped .trace-text { color: #6b6b66; }
 
+.trace-entry-minor { padding: 8px 0; }
+.trace-entry-minor .trace-text { font-size: 0.82rem; font-style: italic; }
+
 .trace-detail { margin-top: 8px; margin-left: 20px; }
 .trace-detail:empty { margin-top: 0; }
 

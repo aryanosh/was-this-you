@@ -225,11 +225,12 @@ async def pipeline_detect_and_search(file: UploadFile = File(...)) -> StreamingR
 
 
 @app.post("/api/pipeline/process-match")
-async def pipeline_process_match(match: dict = Body(...)) -> StreamingResponse:
-    """Stages 3-6 for a chosen match, streamed as newline-delimited JSON
-    status events, ending with a "complete" event carrying the final result
-    card data."""
-    return StreamingResponse(_ndjson(run_process_match(match)), media_type="application/x-ndjson")
+async def pipeline_process_match(matches: list[dict] = Body(...)) -> StreamingResponse:
+    """Stages 3-6 for the ranked candidate list, streamed as newline-delimited
+    JSON status events. Tries candidates in order, skipping any whose image
+    fetch genuinely fails, until one succeeds; ends with a "complete" event
+    carrying the final result card data."""
+    return StreamingResponse(_ndjson(run_process_match(matches)), media_type="application/x-ndjson")
 
 
 # Mounted last so it doesn't shadow the /api/* routes above.

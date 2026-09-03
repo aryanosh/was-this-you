@@ -93,12 +93,44 @@ async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
     )
 
 
-async def run_process_match(match: dict) -> AsyncIterator[dict]:
+MAX_FETCH_ATTEMPTS = 10
+
+
+async def run_process_match(matches: list[dict]) -> AsyncIterator[dict]:
+    candidates = matches[:MAX_FETCH_ATTEMPTS]
+
     yield _event("fetch", "Fetching matched content", "running")
-    try:
-        fetched = fetch_match_content(match)
-    except (DeadLinkError, BlockedError, UnsupportedContentError, ContentFetchError) as exc:
-        yield _event("fetch", "Fetching matched content", "error", message=str(exc))
+    fetched = None
+    match = None
+    attempts_tried = 0
+    for candidate in candidates:
+        attempts_tried += 1
+        try:
+            fetched = fetch_match_content(candidate)
+            match = candidate
+            break
+        except (DeadLinkError, BlockedError, UnsupportedContentError, ContentFetchError) as exc:
+            yield _event(
+                "fetch_attempt",
+                "Fetching matched content",
+                "skipped",
+                data={
+                    "attempt": attempts_tried,
+                    "total": len(candidates),
+                    "source": candidate.get("source"),
+                    "title": candidate.get("title"),
+                },
+                message=str(exc),
+            )
+            continue
+
+    if fetched is None:
+        yield _event(
+            "fetch",
+            "Fetching matched content",
+            "error",
+            message=f"None of the top {len(candidates)} matches' images could be fetched -- all were blocked or unreachable.",
+        )
         return
 
     yield _event(
@@ -112,6 +144,7 @@ async def run_process_match(match: dict) -> AsyncIterator[dict]:
             "page_title": fetched.page_title,
             "scraped_at": fetched.scraped_at,
             "warning": fetched.page_fetch_warning,
+            "attempts_tried": attempts_tried,
         },
     )
 
