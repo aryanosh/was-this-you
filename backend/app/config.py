@@ -27,6 +27,13 @@ def get_env(name: str, *, required: bool = False) -> str | None:
 
 
 SERPAPI_KEY = get_env("SERPAPI_KEY")
+
+# CHAIN_RPC_URL/CHAIN_PRIVATE_KEY are the current names; HARDHAT_RPC_URL/
+# HARDHAT_PRIVATE_KEY are kept as fallbacks for backward compatibility with
+# existing .env files that predate the Sepolia support.
 HARDHAT_RPC_URL = get_env("HARDHAT_RPC_URL") or "http://127.0.0.1:8545"
 HARDHAT_PRIVATE_KEY = get_env("HARDHAT_PRIVATE_KEY")
+CHAIN_RPC_URL = get_env("CHAIN_RPC_URL") or HARDHAT_RPC_URL
+CHAIN_PRIVATE_KEY = get_env("CHAIN_PRIVATE_KEY") or HARDHAT_PRIVATE_KEY
+BLOCK_EXPLORER_URL = get_env("BLOCK_EXPLORER_URL")
 CONTRACT_ADDRESS = get_env("CONTRACT_ADDRESS")

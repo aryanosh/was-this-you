@@ -42,11 +42,25 @@ h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 4px; }
 }
 .dropzone:hover { border-color: #8a8a83; background: #f5f5f2; }
 .dropzone-text { color: #6b6b66; font-size: 0.88rem; }
+.preview-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
 .preview-img {
+  display: block;
   max-width: 100%;
   max-height: 220px;
   border-radius: 6px;
   object-fit: contain;
+}
+.preview-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 button {
@@ -97,27 +111,39 @@ button:disabled { opacity: 0.7; cursor: default; }
   word-break: break-word;
 }
 
-/* ---- Step indicator ---- */
+/* ---- Step indicator (8-step pipeline) ---- */
 
 .step-indicator {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 20px;
 }
 .step {
-  flex: 1;
+  flex: 1 1 100px;
   text-align: center;
   padding: 7px 6px;
   border-radius: 6px;
   background: #ececea;
   color: #9a9a93;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 700;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
+  transition: background 0.2s, color 0.2s;
 }
-.step.active { background: #1c1c1a; color: #fafaf9; }
+.step.active {
+  background: #1c1c1a;
+  color: #fafaf9;
+  animation: pulse-step 1.4s ease-in-out infinite;
+}
 .step.done { background: #e3ede6; color: #2f6b3e; }
+.step.errored { background: #f3e0de; color: #b3261e; }
+
+@keyframes pulse-step {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(28, 28, 26, 0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(28, 28, 26, 0); }
+}
 
 /* ---- Trace log ---- */
 
@@ -125,6 +151,11 @@ button:disabled { opacity: 0.7; cursor: default; }
 .trace-entry {
   padding: 14px 0;
   border-bottom: 1px solid #ececea;
+  animation: fade-in-entry 0.25s ease-out;
+}
+@keyframes fade-in-entry {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .trace-entry:last-child { border-bottom: none; }
 .trace-line { display: flex; align-items: baseline; gap: 8px; }
@@ -167,6 +198,167 @@ button:disabled { opacity: 0.7; cursor: default; }
 .hash-line a { color: #1c1c1a; }
 
 .hash-compare { margin-bottom: 4px; }
+
+.badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.badge-green { background: #e3ede6; color: #2f6b3e; }
+.badge-yellow { background: #f5edd6; color: #8a6d1f; }
+.badge-red { background: #f3e0de; color: #b3261e; }
+.badge-grey { background: #ececea; color: #6b6b66; }
+
+.similarity-verified { color: #2f6b3e; font-weight: 700; }
+.similarity-yellow { color: #8a6d1f; font-weight: 700; }
+.similarity-mismatch { color: #b3261e; font-weight: 700; }
+
+/* ---- Search stage: aggregate stats + match grid ---- */
+
+.match-stats {
+  font-size: 0.8rem;
+  color: #6b6b66;
+  margin-bottom: 10px;
+}
+.match-grid {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+.match-card {
+  flex: 0 0 auto;
+  width: 96px;
+  border-radius: 6px;
+  border: 1px solid #e4e4e0;
+  overflow: hidden;
+  background: #fff;
+  position: relative;
+}
+.match-card.picked { border-color: #1c1c1a; box-shadow: 0 0 0 1px #1c1c1a; }
+.match-card img { width: 100%; height: 72px; object-fit: cover; display: block; background: #ececea; }
+.match-card-body { padding: 5px 6px; }
+.match-card-title { font-size: 0.68rem; color: #1c1c1a; line-height: 1.25; max-height: 2.5em; overflow: hidden; }
+.match-card-domain { font-size: 0.64rem; color: #9a9a93; margin-top: 2px; }
+.match-card-picked-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  background: #1c1c1a;
+  color: #fafaf9;
+  font-size: 0.58rem;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 999px;
+}
+
+/* ---- Fetch stage: attempt list + content preview card ---- */
+
+.fetch-attempts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  font-size: 0.78rem;
+}
+.fetch-attempt-line { color: #6b6b66; }
+.fetch-attempt-line .fa-icon { display: inline-block; width: 14px; }
+.fetch-attempt-line.fa-ok { color: #2f6b3e; }
+.fetch-attempt-line.fa-blocked { color: #b3261e; }
+
+.content-preview-card {
+  display: flex;
+  gap: 12px;
+  padding: 10px;
+  background: #f5f5f2;
+  border-radius: 6px;
+  margin-top: 6px;
+}
+.content-preview-card img { width: 64px; height: 64px; object-fit: cover; border-radius: 4px; flex: 0 0 auto; background: #ececea; }
+.content-preview-body { font-size: 0.78rem; line-height: 1.5; min-width: 0; }
+.content-preview-body .cp-title { font-weight: 600; }
+.content-preview-body .cp-caption { color: #4a4a45; font-style: italic; }
+.content-preview-body .cp-meta { color: #9a9a93; font-size: 0.72rem; }
+
+/* ---- Fingerprint stage: hash flow diagram ---- */
+
+.hash-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.78rem;
+  margin-bottom: 8px;
+}
+.hash-flow-row { color: #4a4a45; }
+.hash-flow-row code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; word-break: break-all; }
+.hash-flow-arrow { color: #9a9a93; padding-left: 4px; }
+
+.blob-details {
+  margin-top: 6px;
+  font-size: 0.76rem;
+}
+.blob-details summary { cursor: pointer; color: #6b6b66; }
+.blob-details pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: #f5f5f2;
+  border-radius: 5px;
+  overflow-x: auto;
+  font-size: 0.72rem;
+}
+
+/* ---- Blockchain stage: transaction lifecycle ---- */
+
+.tx-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-size: 0.8rem;
+}
+.tx-timeline-step {
+  color: #2f6b3e;
+  opacity: 0;
+  animation: fade-in-entry 0.3s ease-out forwards;
+}
+.tx-timeline-step:nth-child(1) { animation-delay: 0.05s; }
+.tx-timeline-step:nth-child(2) { animation-delay: 0.2s; }
+.tx-timeline-step:nth-child(3) { animation-delay: 0.35s; }
+.tx-timeline-step:nth-child(4) { animation-delay: 0.5s; }
+
+/* ---- Re-verify stage: numbered steps + verdict banner ---- */
+
+.reverify-steps {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  font-size: 0.8rem;
+  color: #4a4a45;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.reverify-steps li::before {
+  content: counter(step) ". ";
+  counter-increment: step;
+  color: #9a9a93;
+}
+.reverify-steps { counter-reset: step; }
+
+.verdict-banner {
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: 8px;
+  text-align: center;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+.verdict-banner.verified { background: #e3ede6; color: #2f6b3e; }
+.verdict-banner.mismatch { background: #f3e0de; color: #b3261e; }
 
 .verdict-word {
   display: block;

@@ -25,7 +25,7 @@ from app.fetch_match import (
     fetch_image_bytes,
     fetch_match_content,
 )
-from app.fingerprint import build_fingerprint
+from app.fingerprint import build_fingerprint, compare_perceptual_hashes
 from app.chain_client import (
     AlreadyRegisteredError,
     ChainConfigError,
@@ -176,16 +176,28 @@ async def reverify(
     source_url: str | None = Body(None, embed=True),
     caption: str | None = Body(None, embed=True),
     scraped_at: str = Body(..., embed=True),
+    original_perceptual_hash: str | None = Body(None, embed=True),
 ) -> JSONResponse:
     """Stage 6: independently re-fetch the original image, recompute its
     fingerprint from scratch, and do a fresh on-chain read against the
-    recomputed hash -- no reuse of any in-memory value from Stage 4/5."""
+    recomputed hash -- no reuse of any in-memory value from Stage 4/5.
+
+    If `original_perceptual_hash` (from the initial run's fingerprint stage)
+    is supplied, also reports the visual (pHash) similarity between that and
+    the freshly recomputed image -- useful when the SHA-256 mismatches (e.g.
+    the caption/URL was edited) but the underlying image content is still
+    visually the same.
+    """
     try:
         fresh_image_bytes = fetch_image_bytes(image_url)
     except (DeadLinkError, BlockedError, UnsupportedContentError, ContentFetchError) as exc:
         raise HTTPException(status_code=502, detail=f"Re-fetch failed: {exc}") from exc
 
     fingerprint = build_fingerprint(fresh_image_bytes, source_url, caption, scraped_at)
+
+    perceptual_similarity = None
+    if original_perceptual_hash:
+        perceptual_similarity = compare_perceptual_hashes(original_perceptual_hash, fingerprint.perceptual_hash)
 
     try:
         record = get_record(fingerprint.combined_hash)
@@ -204,6 +216,8 @@ async def reverify(
         {
             "recomputed_image_hash": fingerprint.image_hash,
             "recomputed_combined_hash": fingerprint.combined_hash,
+            "recomputed_perceptual_hash": fingerprint.perceptual_hash,
+            "perceptual_similarity": perceptual_similarity,
             "on_chain_record": record,
             "verified": verified,
             "mismatch_reason": mismatch_reason,
@@ -225,12 +239,18 @@ async def pipeline_detect_and_search(file: UploadFile = File(...)) -> StreamingR
 
 
 @app.post("/api/pipeline/process-match")
-async def pipeline_process_match(matches: list[dict] = Body(...)) -> StreamingResponse:
+async def pipeline_process_match(
+    matches: list[dict] = Body(...),
+    face_encoding: list[float] | None = Body(None),
+) -> StreamingResponse:
     """Stages 3-6 for the ranked candidate list, streamed as newline-delimited
     JSON status events. Tries candidates in order, skipping any whose image
     fetch genuinely fails, until one succeeds; ends with a "complete" event
-    carrying the final result card data."""
-    return StreamingResponse(_ndjson(run_process_match(matches)), media_type="application/x-ndjson")
+    carrying the final result card data. `face_encoding` (from Stage 1) is
+    optional so this endpoint keeps working standalone without it."""
+    return StreamingResponse(
+        _ndjson(run_process_match(matches, face_encoding)), media_type="application/x-ndjson"
+    )
 
 
 # Mounted last so it doesn't shadow the /api/* routes above.

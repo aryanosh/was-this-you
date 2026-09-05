@@ -104,3 +104,45 @@ def detect_faces(image_bytes: bytes) -> list[DetectedFace]:
             )
         )
     return faces
+
+
+def crop_face(image_bytes: bytes, face: DetectedFace, padding_ratio: float = 0.5) -> bytes:
+    """Crop the image to the given face's bounding box, padded by
+    `padding_ratio` on each side (clamped to the image bounds) so the crop
+    includes forehead/chin/some context instead of just the tight box.
+    Returns the crop re-encoded as JPEG bytes.
+    """
+    pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    width, height = pil_image.size
+
+    box_width = face.right - face.left
+    box_height = face.bottom - face.top
+    pad_x = int(box_width * padding_ratio)
+    pad_y = int(box_height * padding_ratio)
+
+    left = max(0, face.left - pad_x)
+    top = max(0, face.top - pad_y)
+    right = min(width, face.right + pad_x)
+    bottom = min(height, face.bottom + pad_y)
+
+    cropped = pil_image.crop((left, top, right, bottom))
+    buf = io.BytesIO()
+    cropped.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
+def compare_faces(encoding_a: list[float], encoding_b: list[float]) -> float:
+    """Cosine similarity between two 128-d face encodings, returned as a
+    0-100% score. 100% means identical vectors; face_recognition encodings
+    from the same person's face typically land well above 90% here."""
+    a = np.asarray(encoding_a, dtype=np.float64)
+    b = np.asarray(encoding_b, dtype=np.float64)
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    cosine_sim = float(np.dot(a, b) / (norm_a * norm_b))
+    # Cosine similarity for these encodings is already close to [0, 1] for
+    # plausible face pairs, but clamp defensively before scaling to a percent.
+    cosine_sim = max(-1.0, min(1.0, cosine_sim))
+    return round(((cosine_sim + 1.0) / 2.0) * 100.0, 1)

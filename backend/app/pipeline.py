@@ -9,12 +9,15 @@ Stages 3-6 once a match is chosen.
 """
 from __future__ import annotations
 
+import base64
 from typing import AsyncIterator
 
 from app.face_detect import (
     FaceDetectionError,
     NoFaceFoundError,
     UnsupportedImageError,
+    compare_faces,
+    crop_face,
     detect_faces,
 )
 from app.fetch_match import (
@@ -25,7 +28,7 @@ from app.fetch_match import (
     fetch_image_bytes,
     fetch_match_content,
 )
-from app.fingerprint import build_fingerprint
+from app.fingerprint import build_fingerprint, compare_perceptual_hashes
 from app.reverse_search import (
     ImageUploadError,
     MissingApiKeyError,
@@ -43,6 +46,7 @@ from app.chain_client import (
     get_record,
     submit_fingerprint,
 )
+from app.deepfake_detect import DeepfakeDetectionError, detect_deepfake
 
 
 def _event(stage: str, label: str, status: str, data: dict | None = None, message: str | None = None) -> dict:
@@ -63,18 +67,36 @@ async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
     num_faces = len(faces)
     warning = None
     if num_faces > 1:
-        warning = f"{num_faces} faces detected; proceeding with the whole image for search."
+        warning = f"{num_faces} faces detected; searching with the largest one."
+    primary_face = faces[0]
+    cropped_face_bytes = crop_face(image_bytes, primary_face)
+    cropped_face_b64 = base64.b64encode(cropped_face_bytes).decode("ascii")
+
     yield _event(
         "detect",
         "Detecting face",
         "done",
-        data={"num_faces": num_faces, "boxes": [f.to_dict()["box"] for f in faces]},
+        data={
+            "num_faces": num_faces,
+            "boxes": [f.to_dict()["box"] for f in faces],
+            "cropped_face_b64": cropped_face_b64,
+            "face_encoding": primary_face.encoding,
+        },
         message=warning,
     )
 
+    yield _event("deepfake", "Checking image authenticity", "running")
+    try:
+        deepfake_result = detect_deepfake(image_bytes)
+        yield _event("deepfake", "Checking image authenticity", "done", data=deepfake_result.to_dict())
+    except DeepfakeDetectionError as exc:
+        # Advisory only -- never blocks the pipeline, so this is reported as
+        # "skipped" rather than "error" and execution continues regardless.
+        yield _event("deepfake", "Checking image authenticity", "skipped", message=str(exc))
+
     yield _event("search", "Searching the web for matching posts", "running")
     try:
-        matches = reverse_image_search(image_bytes)
+        matches = reverse_image_search(cropped_face_bytes)
     except MissingApiKeyError as exc:
         yield _event("search", "Searching the web for matching posts", "error", message=str(exc))
         return
@@ -96,7 +118,7 @@ async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
 MAX_FETCH_ATTEMPTS = 10
 
 
-async def run_process_match(matches: list[dict]) -> AsyncIterator[dict]:
+async def run_process_match(matches: list[dict], face_encoding: list[float] | None = None) -> AsyncIterator[dict]:
     candidates = matches[:MAX_FETCH_ATTEMPTS]
 
     yield _event("fetch", "Fetching matched content", "running")
@@ -133,6 +155,17 @@ async def run_process_match(matches: list[dict]) -> AsyncIterator[dict]:
         )
         return
 
+    face_similarity_score: float | None = None
+    face_found_in_match = False
+    if face_encoding is not None:
+        try:
+            matched_faces = detect_faces(fetched.image_bytes)
+            face_found_in_match = True
+            face_similarity_score = compare_faces(face_encoding, matched_faces[0].encoding)
+        except (NoFaceFoundError, UnsupportedImageError, FaceDetectionError):
+            face_found_in_match = False
+            face_similarity_score = None
+
     yield _event(
         "fetch",
         "Fetching matched content",
@@ -145,6 +178,8 @@ async def run_process_match(matches: list[dict]) -> AsyncIterator[dict]:
             "scraped_at": fetched.scraped_at,
             "warning": fetched.page_fetch_warning,
             "attempts_tried": attempts_tried,
+            "face_similarity_score": face_similarity_score,
+            "face_found_in_match": face_found_in_match,
         },
     )
 
@@ -154,7 +189,13 @@ async def run_process_match(matches: list[dict]) -> AsyncIterator[dict]:
         "fingerprint",
         "Computing SHA-256 fingerprint",
         "done",
-        data={"image_hash": fingerprint.image_hash, "combined_hash": fingerprint.combined_hash, "blob": fingerprint.blob},
+        data={
+            "image_hash": fingerprint.image_hash,
+            "combined_hash": fingerprint.combined_hash,
+            "blob": fingerprint.blob,
+            "perceptual_hash": fingerprint.perceptual_hash,
+            "image_size_bytes": len(fetched.image_bytes),
+        },
     )
 
     yield _event("chain_submit", "Uploading fingerprint to the blockchain", "running")
@@ -184,6 +225,7 @@ async def run_process_match(matches: list[dict]) -> AsyncIterator[dict]:
         return
 
     recomputed = build_fingerprint(fresh_bytes, fetched.source_url, fetched.caption, fetched.scraped_at)
+    perceptual_similarity = compare_perceptual_hashes(fingerprint.perceptual_hash, recomputed.perceptual_hash)
     try:
         record = get_record(recomputed.combined_hash)
         verified = True
@@ -203,6 +245,8 @@ async def run_process_match(matches: list[dict]) -> AsyncIterator[dict]:
         data={
             "recomputed_image_hash": recomputed.image_hash,
             "recomputed_combined_hash": recomputed.combined_hash,
+            "recomputed_perceptual_hash": recomputed.perceptual_hash,
+            "perceptual_similarity": perceptual_similarity,
             "on_chain_record": record,
             "verified": verified,
             "mismatch_reason": mismatch_reason,
@@ -222,10 +266,13 @@ async def run_process_match(matches: list[dict]) -> AsyncIterator[dict]:
             },
             "image_hash": fingerprint.image_hash,
             "combined_hash": fingerprint.combined_hash,
+            "perceptual_hash": fingerprint.perceptual_hash,
             "chain_result": chain_result,
             "verified": verified,
             "recomputed_image_hash": recomputed.image_hash,
             "recomputed_combined_hash": recomputed.combined_hash,
+            "recomputed_perceptual_hash": recomputed.perceptual_hash,
+            "perceptual_similarity": perceptual_similarity,
             "on_chain_record": record,
         },
     )

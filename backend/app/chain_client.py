@@ -13,7 +13,7 @@ from eth_account import Account
 from web3 import Web3
 from web3.exceptions import ContractLogicError
 
-from app.config import CONTRACT_ADDRESS, HARDHAT_PRIVATE_KEY, HARDHAT_RPC_URL
+from app.config import BLOCK_EXPLORER_URL, CHAIN_PRIVATE_KEY, CHAIN_RPC_URL, CONTRACT_ADDRESS
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _ARTIFACT_PATH = (
@@ -24,6 +24,11 @@ _ARTIFACT_PATH = (
     / "FingerprintRegistry.sol"
     / "FingerprintRegistry.json"
 )
+
+# Chain IDs of well-known local dev networks -- anything else is treated as a
+# real network and gets an explicit chainId set on the transaction.
+_LOCAL_CHAIN_IDS = {31337, 1337}
+SEPOLIA_CHAIN_ID = 11155111
 
 
 class ChainError(Exception):
@@ -58,14 +63,15 @@ def _load_abi() -> list:
 
 
 def _get_web3() -> Web3:
-    w3 = Web3(Web3.HTTPProvider(HARDHAT_RPC_URL, request_kwargs={"timeout": 10}))
+    w3 = Web3(Web3.HTTPProvider(CHAIN_RPC_URL, request_kwargs={"timeout": 10}))
     try:
         connected = w3.is_connected()
     except Exception as exc:
-        raise ChainConnectionError(f"Could not reach Hardhat node at {HARDHAT_RPC_URL}: {exc}") from exc
+        raise ChainConnectionError(f"Could not reach the chain RPC at {CHAIN_RPC_URL}: {exc}") from exc
     if not connected:
         raise ChainConnectionError(
-            f"Hardhat node at {HARDHAT_RPC_URL} is not responding. Make sure `npx hardhat node` is running."
+            f"Chain RPC at {CHAIN_RPC_URL} is not responding. "
+            "For local dev, make sure `npx hardhat node` is running; for Sepolia, check CHAIN_RPC_URL."
         )
     return w3
 
@@ -94,24 +100,26 @@ def submit_fingerprint(combined_hash_hex: str, source_url: str) -> dict:
     Returns the actual tx hash + block number read back from a mined receipt
     -- never a placeholder.
     """
-    if not HARDHAT_PRIVATE_KEY:
+    if not CHAIN_PRIVATE_KEY:
         raise ChainConfigError(
-            "HARDHAT_PRIVATE_KEY is not set. Copy one of the pre-funded account "
-            "keys printed by `npx hardhat node` into .env."
+            "CHAIN_PRIVATE_KEY is not set. For local dev, copy one of the pre-funded account "
+            "keys printed by `npx hardhat node` into .env; for Sepolia, use a funded testnet key."
         )
 
     w3 = _get_web3()
     contract = _get_contract(w3)
-    account = Account.from_key(HARDHAT_PRIVATE_KEY)
+    account = Account.from_key(CHAIN_PRIVATE_KEY)
     hash_bytes = _hex_to_bytes32(combined_hash_hex)
 
     try:
-        tx = contract.functions.registerFingerprint(hash_bytes, source_url or "").build_transaction(
-            {
-                "from": account.address,
-                "nonce": w3.eth.get_transaction_count(account.address),
-            }
-        )
+        chain_id = w3.eth.chain_id
+        tx_params = {
+            "from": account.address,
+            "nonce": w3.eth.get_transaction_count(account.address),
+        }
+        if chain_id not in _LOCAL_CHAIN_IDS:
+            tx_params["chainId"] = chain_id
+        tx = contract.functions.registerFingerprint(hash_bytes, source_url or "").build_transaction(tx_params)
         signed = account.sign_transaction(tx)
         raw = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction")
         tx_hash = w3.eth.send_raw_transaction(raw)
@@ -125,12 +133,20 @@ def submit_fingerprint(combined_hash_hex: str, source_url: str) -> dict:
     except Exception as exc:
         raise ChainError(f"Failed to submit fingerprint to the chain: {exc}") from exc
 
-    return {
-        "tx_hash": "0x" + receipt["transactionHash"].hex(),
+    tx_hash_hex = "0x" + receipt["transactionHash"].hex()
+    result = {
+        "tx_hash": tx_hash_hex,
         "block_number": receipt["blockNumber"],
         "submitter": account.address,
+        "submitter_address": account.address,
         "status": receipt["status"],
+        "gas_used": receipt["gasUsed"],
+        "contract_address": contract.address,
+        "chain_id": chain_id,
     }
+    if BLOCK_EXPLORER_URL:
+        result["block_explorer_url"] = f"{BLOCK_EXPLORER_URL.rstrip('/')}/tx/{tx_hash_hex}"
+    return result
 
 
 def get_record(combined_hash_hex: str) -> dict:

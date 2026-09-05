@@ -25,3 +25,8 @@ backend/scratch/
 Thumbs.db
 .vscode/
 .idea/
+
+
+#Files
+CLAUDE.md
+IMPLEMENTATION_PLAN.md
