@@ -143,8 +143,9 @@ def _run_lens_search(image_id: str, api_key: str) -> dict:
             f"SerpApi search returned a non-JSON response (HTTP {resp.status_code})."
         ) from exc
 
-    if resp.status_code != 200 or "error" in data:
-        detail = data.get("error", resp.text[:300])
+    error_detail = data.get("error")
+    if resp.status_code != 200 or (error_detail and "hasn't returned any results" not in error_detail.lower()):
+        detail = error_detail or resp.text[:300]
         raise SearchApiError(f"SerpApi search failed (HTTP {resp.status_code}): {detail}")
 
     return data
