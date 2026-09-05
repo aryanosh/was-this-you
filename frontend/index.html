@@ -4,12 +4,22 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Was This You?</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <main class="wrap">
-    <h1>Was This You?</h1>
-    <p class="tagline">Find where a photo has been reused, and prove whether the record still matches.</p>
+    <div class="hero">
+      <h1>Was This You?</h1>
+      <p class="tagline">Find where a photo has been reused online, and prove the discovery on a public blockchain — live, with nothing hardcoded.</p>
+      <ol class="mechanism">
+        <li><span class="mechanism-num">1</span>Detect &amp; verify the face is real</li>
+        <li><span class="mechanism-num">2</span>Search the web for that exact face</li>
+        <li><span class="mechanism-num">3</span>Anchor proof on the blockchain</li>
+      </ol>
+    </div>
 
     <form id="upload-form" class="upload-card">
       <label class="dropzone" for="file-input" id="dropzone">

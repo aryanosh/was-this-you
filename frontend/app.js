@@ -147,6 +147,19 @@ const RUNNING_TEXT = {
   reverify: "Independently re-verifying the on-chain record…",
 };
 
+// One plain-English line per stage, always visible under the heading, so a
+// viewer following along without narration knows *why* each step exists.
+const STAGE_EXPLAINER = {
+  upload: "Loading the photo into the pipeline.",
+  detect: "Finds the face and extracts a unique 128-number biometric signature from it.",
+  deepfake: "Sanity-checks that the photo itself isn't AI-generated before trusting anything found from it.",
+  search: "Runs a live reverse-image search using only the cropped face, not the whole photo.",
+  fetch: "Downloads the real image and page behind the top match, and re-checks the face against the original.",
+  fingerprint: "Turns the downloaded content into two tamper-evident fingerprints: an exact hash and a visual hash.",
+  chain_submit: "Writes the fingerprint to the blockchain as a permanent, public, timestamped record.",
+  reverify: "Independently re-downloads, re-hashes, and re-reads the chain to prove the record hasn't changed.",
+};
+
 const MARKERS = {
   running: '<span class="spinner" aria-hidden="true"></span>',
   done: "✓",
@@ -162,11 +175,13 @@ function appendEntry(stage, text) {
   const div = document.createElement("div");
   div.className = "trace-entry state-running";
   div.id = `entry-${stage}`;
+  const explainer = STAGE_EXPLAINER[stage];
   div.innerHTML = `
     <div class="trace-line">
       <span class="marker">${MARKERS.running}</span>
       <span class="trace-text">${escapeHtml(text ?? RUNNING_TEXT[stage] ?? stage)}</span>
     </div>
+    ${explainer ? `<div class="trace-explainer">${escapeHtml(explainer)}</div>` : ""}
     <div class="trace-detail"></div>
   `;
   traceEl.appendChild(div);
@@ -384,7 +399,15 @@ function verdictDetailHtml(data) {
         : `<div class="hash-line"><span>On-chain record</span><span>none found for the recomputed hash</span></div>`
     }
     ${post.url ? `<div class="hash-line"><span>Matched post</span><a href="${escapeHtml(post.url)}" target="_blank" rel="noopener">${escapeHtml(post.title || post.url)}</a></div>` : ""}
-    <div class="verdict-banner ${verified ? "verified" : "mismatch"}">${verified ? "✓ VERIFIED" : "✕ MISMATCH"}</div>
+    <div class="verdict-banner ${verified ? "verified" : "mismatch"}">
+      <div class="verdict-icon">${verified ? "✓" : "✕"}</div>
+      <div class="verdict-word">${verified ? "VERIFIED" : "MISMATCH"}</div>
+      <div class="verdict-sub">${
+        verified
+          ? `This exact image, link, and caption are permanently recorded on the blockchain.`
+          : `The freshly recomputed fingerprint does not match any on-chain record.`
+      }</div>
+    </div>
   `;
 }
 
@@ -418,7 +441,15 @@ function renderReverifyResult(data) {
         ? `<div class="hash-line"><span>Recorded on-chain</span><span>${escapeHtml(formatTimestamp(data.on_chain_record.timestamp))} by <code>${escapeHtml(data.on_chain_record.submitter)}</code></span></div>`
         : `<div class="hash-line"><span>On-chain record</span><span>${escapeHtml(data.mismatch_reason || "none found for this hash")}</span></div>`
     }
-    <div class="verdict-banner ${verified ? "verified" : "mismatch"}">${verified ? "✓ VERIFIED" : "✕ MISMATCH"}</div>
+    <div class="verdict-banner ${verified ? "verified" : "mismatch"}">
+      <div class="verdict-icon">${verified ? "✓" : "✕"}</div>
+      <div class="verdict-word">${verified ? "VERIFIED" : "MISMATCH"}</div>
+      <div class="verdict-sub">${
+        verified
+          ? `Still matches the on-chain record.`
+          : `No longer matches — the edited content produces a different fingerprint.`
+      }</div>
+    </div>
   `;
 }
 
