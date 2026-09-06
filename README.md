@@ -8,7 +8,7 @@
 [![PyTorch ViT](https://img.shields.io/badge/AI_Model-ViT_Deepfake_Detector-EE4C2C?logo=pytorch&logoColor=white)](https://huggingface.co/dima806/deepfake_vs_real_image_detection)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **Built for Hacker House Goa 2026** (AI × Web3 Track)  
+
 > *A production-grade pipeline that detects faces, validates authenticity against AI-generation, searches web appearances specifically using face-cropped biometrics, filters out false visual matches with an on-the-fly $\ge 55\%$ facial verification gate, and permanently anchors dual cryptographic + perceptual fingerprints on Ethereum.*
 
 ---
