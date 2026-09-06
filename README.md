@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 
-> *A production-grade pipeline that detects faces, validates authenticity against AI-generation, searches web appearances specifically using face-cropped biometrics, filters out false visual matches with an on-the-fly $\ge 55\%$ facial verification gate, and permanently anchors dual cryptographic + perceptual fingerprints on Ethereum.*
+> *A production-grade pipeline that detects faces, validates authenticity against AI-generation, searches web appearances specifically using face-cropped biometrics, filters out false visual matches with an on-the-fly facial verification gate, and permanently anchors dual cryptographic + perceptual fingerprints on Ethereum.*
 
 ---
 
