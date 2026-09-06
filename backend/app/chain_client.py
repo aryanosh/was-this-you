@@ -123,14 +123,13 @@ def submit_fingerprint(combined_hash_hex: str, source_url: str) -> dict:
         signed = account.sign_transaction(tx)
         raw = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction")
         tx_hash = w3.eth.send_raw_transaction(raw)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
-    except ContractLogicError as exc:
-        if "AlreadyRegistered" in str(exc):
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    except Exception as exc:
+        err_str = str(exc)
+        if "AlreadyRegistered" in err_str or "77caf672" in err_str:
             raise AlreadyRegisteredError(
                 f"This exact fingerprint hash is already registered on-chain: {combined_hash_hex}"
             ) from exc
-        raise ChainError(f"Transaction reverted: {exc}") from exc
-    except Exception as exc:
         raise ChainError(f"Failed to submit fingerprint to the chain: {exc}") from exc
 
     tx_hash_hex = "0x" + receipt["transactionHash"].hex()
@@ -159,11 +158,10 @@ def get_record(combined_hash_hex: str) -> dict:
 
     try:
         timestamp, submitter, source_url = contract.functions.getRecord(hash_bytes).call()
-    except ContractLogicError as exc:
-        if "NotRegistered" in str(exc):
-            raise NotRegisteredError(f"No on-chain record exists for hash {combined_hash_hex}") from exc
-        raise ChainError(f"On-chain read reverted: {exc}") from exc
     except Exception as exc:
+        err_str = str(exc)
+        if "NotRegistered" in err_str or "8cc00d16" in err_str:
+            raise NotRegisteredError(f"No on-chain record exists for hash {combined_hash_hex}") from exc
         raise ChainError(f"Failed to read from the chain: {exc}") from exc
 
     return {"timestamp": timestamp, "submitter": submitter, "source_url": source_url}

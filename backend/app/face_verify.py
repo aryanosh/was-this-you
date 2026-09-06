@@ -129,4 +129,9 @@ def verify_candidates(
                 )
             )
 
+    # Sort passed candidates by face similarity descending so that direct,
+    # high-confidence photographic matches (e.g. 95%+) are prioritized over
+    # lower-confidence artistic reproductions or sketches (e.g. 70-80%).
+    passed.sort(key=lambda vm: vm.face_similarity or 0.0, reverse=True)
+
     return passed, rejected
