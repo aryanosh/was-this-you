@@ -95,14 +95,42 @@ async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
         yield _event("deepfake", "Checking image authenticity", "skipped", message=str(exc))
 
     yield _event("search", "Searching the web for matching posts", "running")
+    search_mode = "face_crop"
     try:
         matches = reverse_image_search(cropped_face_bytes)
     except MissingApiKeyError as exc:
         yield _event("search", "Searching the web for matching posts", "error", message=str(exc))
         return
-    except NoMatchesFoundError as exc:
-        yield _event("search", "Searching the web for matching posts", "error", message=str(exc))
-        return
+    except NoMatchesFoundError:
+        # The tight face crop is more precise but gives Google Lens less to
+        # match against than a full photo would -- a real repost of the
+        # *whole* photo elsewhere on the web can still be found even when
+        # the isolated face crop finds nothing. Retry once with the full
+        # original image before giving up. Reported as a separate minor
+        # "search_retry" event (like fetch_attempt) rather than a second
+        # running/skipped pair on "search" itself, so the main search entry
+        # stays a single continuous trace item.
+        search_mode = "full_image"
+        yield _event(
+            "search_retry",
+            "Retrying with the full photo",
+            "skipped",
+            message="No matches for the cropped face -- retrying with the full photo.",
+        )
+        try:
+            matches = reverse_image_search(image_bytes)
+        except MissingApiKeyError as exc:
+            yield _event("search", "Searching the web for matching posts", "error", message=str(exc))
+            return
+        except NoMatchesFoundError as exc:
+            yield _event(
+                "search", "Searching the web for matching posts", "error",
+                message=f"{exc} (tried both the cropped face and the full photo.)",
+            )
+            return
+        except (ImageUploadError, SearchApiError, ReverseSearchError) as exc:
+            yield _event("search", "Searching the web for matching posts", "error", message=str(exc))
+            return
     except (ImageUploadError, SearchApiError, ReverseSearchError) as exc:
         yield _event("search", "Searching the web for matching posts", "error", message=str(exc))
         return
@@ -111,7 +139,7 @@ async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
         "search",
         "Searching the web for matching posts",
         "done",
-        data={"num_matches": len(matches), "matches": matches},
+        data={"num_matches": len(matches), "matches": matches, "search_mode": search_mode},
     )
 
 

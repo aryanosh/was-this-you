@@ -261,9 +261,13 @@ function matchCardHtml(match, isPicked) {
 function searchDetailHtml(data) {
   const matches = data.matches || [];
   const domains = new Set(matches.map((m) => hostnameOf(m.link) || m.source).filter(Boolean));
+  const modeNote =
+    data.search_mode === "full_image"
+      ? `<div class="match-stats">Found using the full photo (the cropped face alone returned no matches).</div>`
+      : "";
   const stats = `<div class="match-stats">${matches.length} visual match${matches.length === 1 ? "" : "es"} found across ${domains.size} platform${domains.size === 1 ? "" : "s"}.</div>`;
   const grid = `<div class="match-grid">${matches.map((m, i) => matchCardHtml(m, i === 0)).join("")}</div>`;
-  return stats + grid;
+  return modeNote + stats + grid;
 }
 
 function detectDetailHtml(data) {
@@ -538,6 +542,21 @@ function handleStageEvent(evt) {
       settleEntry("reverify", "done", doneText("reverify", data), verdictDetailHtml(data));
       markAllStepsDone();
       showReverifyPanel(data.combined_hash);
+    }
+    return;
+  }
+
+  if (stage === "search_retry") {
+    if (status === "skipped") {
+      const div = document.createElement("div");
+      div.className = "trace-entry state-skipped trace-entry-minor";
+      div.innerHTML = `
+        <div class="trace-line">
+          <span class="marker">${MARKERS.skipped}</span>
+          <span class="trace-text">${escapeHtml(message || "Retrying with the full photo.")}</span>
+        </div>
+      `;
+      traceEl.appendChild(div);
     }
     return;
   }
