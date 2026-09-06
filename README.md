@@ -135,8 +135,8 @@ contract FingerprintRegistry {
 
 ```bash
 # Clone the repository
-git clone https://github.com/aryanosh/face-detector.git
-cd face-detector
+git clone https://github.com/aryanosh/was-this-you.git
+cd was-this-you
 
 # Set up Python virtual environment & dependencies
 python -m venv backend/.venv
