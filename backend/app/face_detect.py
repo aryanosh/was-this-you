@@ -131,18 +131,34 @@ def crop_face(image_bytes: bytes, face: DetectedFace, padding_ratio: float = 0.5
     return buf.getvalue()
 
 
-def compare_faces(encoding_a: list[float], encoding_b: list[float]) -> float:
-    """Cosine similarity between two 128-d face encodings, returned as a
-    0-100% score. 100% means identical vectors; face_recognition encodings
-    from the same person's face typically land well above 90% here."""
+def compare_faces(encoding_a: list[float], encoding_b: list[float], match_threshold: float = 0.6) -> float:
+    """Biometric similarity between two 128-d face_recognition encodings, as
+    a 0-100% confidence score.
+
+    face_recognition's encodings are trained around Euclidean distance, not
+    cosine similarity -- the library's own `compare_faces()` helper treats
+    distance <= 0.6 as "the same person" by default (this is the standard,
+    widely-documented threshold for this exact model). Cosine similarity on
+    this embedding space is a different, uncalibrated metric that can report
+    misleadingly high scores for two different people's faces.
+
+    This instead computes the real Euclidean distance and converts it to a
+    percentage using a two-piece curve (the same shape commonly used by the
+    face_recognition community for exactly this purpose) so the match
+    threshold itself lands at 50%, confidently-same faces land solidly above
+    80%, and clearly-different faces drop toward 0%.
+    """
     a = np.asarray(encoding_a, dtype=np.float64)
     b = np.asarray(encoding_b, dtype=np.float64)
-    norm_a = np.linalg.norm(a)
-    norm_b = np.linalg.norm(b)
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    cosine_sim = float(np.dot(a, b) / (norm_a * norm_b))
-    # Cosine similarity for these encodings is already close to [0, 1] for
-    # plausible face pairs, but clamp defensively before scaling to a percent.
-    cosine_sim = max(-1.0, min(1.0, cosine_sim))
-    return round(((cosine_sim + 1.0) / 2.0) * 100.0, 1)
+    distance = float(np.linalg.norm(a - b))
+
+    if distance > match_threshold:
+        spread = 1.0 - match_threshold
+        confidence = (1.0 - distance) / (spread * 2.0)
+    else:
+        spread = match_threshold
+        linear_val = 1.0 - (distance / (spread * 2.0))
+        confidence = linear_val + (1.0 - linear_val) * ((linear_val - 0.5) * 2.0) ** 0.2
+
+    confidence = max(0.0, min(1.0, confidence))
+    return round(confidence * 100.0, 1)
