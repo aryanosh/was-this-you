@@ -13,31 +13,27 @@
 
 ---
 
-## ⚡ The Problem: Why Most "Face Search" Pipelines Fail
+## ⚡ Engineering Challenges in Face Search & Provenance
 
-Most hackathon submissions follow a generic tutorial recipe:
-`Photo Upload ➔ Whole-image Reverse Search ➔ SHA-256 ➔ Localhost Blockchain`
+Building an automated pipeline that traces face appearances across the web and certifies them on a public ledger involves critical technical hurdles:
 
-In practice, this naive pipeline **fails catastrophically in the real world**:
-1. **Scenery Bias (False Positives)**: Upload a portrait taken in a park, and Google Lens matches the trees, flowers, or monument—recommending a totally different stranger whose page happens to feature similar background flora.
-2. **Blind Blockchain Ingestion**: A naive pipeline blindly takes that false visual match and permanently certifies a wrong person's identity on-chain.
-3. **Deepfake Blindspot**: If an uploaded face was synthesized by Midjourney or Flux, a standard tool will "verify" a synthetic identity as legitimate web history.
-4. **Brittle Cryptographic Hashes**: Standard SHA-256 flips completely if an image is recompressed or resized, failing to distinguish between image tampering and innocent metadata edits.
+1. **Scenery Bias & False Positives**: Naive reverse image searches frequently match background environments, lighting, and clothing rather than facial features, leading to false visual matches.
+2. **Synthetic & Deepfake Content**: AI-generated portraits need to be screened early in the ingestion lifecycle to evaluate authenticity before web discovery.
+3. **Candidate Verification**: Search engines often return dozens of noisy results; candidates must be biometrically cross-referenced against the original face encoding to filter out false leads.
+4. **Resilience to Innocent Transformations**: While SHA-256 is ideal for strict byte-level provenance, minor compression or metadata changes break traditional hashes. A dual-fingerprint architecture pairing SHA-256 with perceptual hashing (pHash) provides both mathematical tamper-evidence and visual similarity metrics.
 
 ---
 
-## 🏆 Why "Was This You?" Stands Out
+## 🎯 Key Capabilities
 
-| Dimension | Generic Submissions | **Was This You? (Our Architecture)** |
-| :--- | :--- | :--- |
-| **Face Search Target** | Searches the whole image (matches backgrounds, scenery, clothes) | **Extracts & crops face bounding box with 50% contextual padding** |
-| **Search Engines** | Google Lens only (not optimized for faces) | **Multi-engine: Yandex Images + Bing Reverse Image primary; Google Lens fallback** |
-| **Candidate Filtering** | Blindly accepts the first URL returned by API | **Stage 2.5 Biometric Verification Gate**: Re-runs face recognition on candidate thumbnails; rejects any candidate with $<55\%$ facial similarity |
-| **AI / Threat Defense** | None (accepts synthetic faces without question) | **ViT Deepfake Classifier**: Real-time authenticity confidence score before search |
-| **Cryptographic Anchoring** | Single SHA-256 (breaks on simple JPEG re-saving) | **Dual Fingerprint**: SHA-256 (canonical provenance) + **pHash (perceptual similarity)** |
-| **Blockchain Target** | Local Hardhat only (unverifiable by third parties) | **Ethereum Sepolia Testnet** with public Etherscan links + Local Hardhat support |
-| **Verification Sandbox** | Static "Verified" label | **Interactive Tamper Playground**: Edit caption/URL live to prove cryptographic mismatch while pHash remains 100% |
-| **Observability** | Blank loading spinner | **Live Streaming Chain-of-Thought**: NDJSON events streaming bounding boxes, fetch attempts, and gas metrics |
+* **Contextual Face-Cropped Search**: Isolates the face bounding box with 50% contextual padding to focus search queries strictly on facial biometrics rather than background scenery.
+* **Multi-Engine Reverse Search**: Automatically routes through Yandex Images and Bing Reverse Image with Google Lens fallback for comprehensive face discovery.
+* **Stage 2.5 Biometric Verification Gate**: Downloads search candidate thumbnails, extracts facial landmarks, and evaluates biometric Euclidean distance against the source face—filtering out matches below 55% similarity and prioritizing high-confidence matches.
+* **ViT Deepfake Classification**: Employs an on-device Vision Transformer (`dima806/deepfake_vs_real_image_detection`) to compute real-time authenticity confidence before querying the web.
+* **Dual Fingerprint Generation**: Produces a canonical SHA-256 hash (binding image bytes, URL, caption, and scrape timestamp) alongside a 64-bit DCT perceptual hash (pHash).
+* **Ethereum Sepolia Blockchain Anchoring**: Submits raw signed EIP-155 transactions to deploy and interact with `FingerprintRegistry.sol` on public testnet with verifiable public Etherscan transaction logs.
+* **Interactive Tamper Playground**: Built-in verification sandbox allowing live simulation of content or URL tampering to verify cryptographic immutability and visual similarity.
+* **Real-time Streaming Chain-of-Thought**: NDJSON events stream bounding box coordinates, candidates, fetch attempts, and gas metrics in real time.
 
 ---
 
