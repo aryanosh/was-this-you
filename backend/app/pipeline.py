@@ -28,6 +28,7 @@ from app.fetch_match import (
     fetch_image_bytes,
     fetch_match_content,
 )
+from app.face_verify import FACE_SIMILARITY_THRESHOLD, VerifiedMatch, verify_candidates
 from app.fingerprint import build_fingerprint, compare_perceptual_hashes
 from app.reverse_search import (
     ImageUploadError,
@@ -51,6 +52,32 @@ from app.deepfake_detect import DeepfakeDetectionError, detect_deepfake
 
 def _event(stage: str, label: str, status: str, data: dict | None = None, message: str | None = None) -> dict:
     return {"stage": stage, "label": label, "status": status, "data": data, "message": message}
+
+
+def _search_one_attempt(
+    image_bytes: bytes, original_encoding: list[float]
+) -> tuple[list[dict], list[VerifiedMatch], list[VerifiedMatch], str | None]:
+    """Runs one reverse-image-search attempt (Yandex, falling back to Google
+    Lens internally) against `image_bytes`, then face-verifies every raw
+    match found against `original_encoding`.
+
+    Returns (raw_matches, passed, rejected, hard_error). `hard_error` is set
+    only for failures that should abort the whole pipeline (missing API key,
+    upload/search API failure) -- a clean zero-matches result is NOT a hard
+    error, it's just an empty raw_matches/passed/rejected so the caller can
+    try the next fallback step.
+    """
+    try:
+        raw_matches = reverse_image_search(image_bytes)
+    except NoMatchesFoundError:
+        return [], [], [], None
+    except MissingApiKeyError as exc:
+        return [], [], [], str(exc)
+    except (ImageUploadError, SearchApiError, ReverseSearchError) as exc:
+        return [], [], [], str(exc)
+
+    passed, rejected = verify_candidates(raw_matches, original_encoding)
+    return raw_matches, passed, rejected, None
 
 
 async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
@@ -95,51 +122,100 @@ async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
         yield _event("deepfake", "Checking image authenticity", "skipped", message=str(exc))
 
     yield _event("search", "Searching the web for matching posts", "running")
+
+    # Search + verify chain (crop first, full image as fallback). At each
+    # step, matches come back from reverse_image_search() (Yandex first,
+    # Google Lens as its own internal fallback) and are immediately run
+    # through the face verification filter -- a raw visual match is never
+    # trusted on its own, since Google Lens (and to a lesser extent Yandex)
+    # can match scene/texture rather than the actual face. Only advancing to
+    # the full-image retry when the crop produced zero *verified* matches
+    # (not just zero raw matches) is what makes this the non-negotiable fix:
+    # a crop that returns matches of the wrong person must not be accepted
+    # just because Google Lens returned "something".
     search_mode = "face_crop"
-    try:
-        matches = reverse_image_search(cropped_face_bytes)
-    except MissingApiKeyError as exc:
-        yield _event("search", "Searching the web for matching posts", "error", message=str(exc))
+    raw_matches, passed, rejected, hard_error = _search_one_attempt(cropped_face_bytes, primary_face.encoding)
+    if hard_error:
+        yield _event("search", "Searching the web for matching posts", "error", message=hard_error)
         return
-    except NoMatchesFoundError:
-        # The tight face crop is more precise but gives Google Lens less to
-        # match against than a full photo would -- a real repost of the
-        # *whole* photo elsewhere on the web can still be found even when
-        # the isolated face crop finds nothing. Retry once with the full
-        # original image before giving up. Reported as a separate minor
-        # "search_retry" event (like fetch_attempt) rather than a second
-        # running/skipped pair on "search" itself, so the main search entry
-        # stays a single continuous trace item.
-        search_mode = "full_image"
+
+    if not passed:
         yield _event(
             "search_retry",
             "Retrying with the full photo",
             "skipped",
-            message="No matches for the cropped face -- retrying with the full photo.",
+            message=(
+                f"Cropped face returned {len(raw_matches)} raw match(es) but {len(rejected)} "
+                "were rejected by face verification -- retrying with the full photo."
+                if raw_matches
+                else "No matches for the cropped face -- retrying with the full photo."
+            ),
         )
-        try:
-            matches = reverse_image_search(image_bytes)
-        except MissingApiKeyError as exc:
-            yield _event("search", "Searching the web for matching posts", "error", message=str(exc))
+        search_mode = "full_image"
+        full_raw, full_passed, full_rejected, hard_error = _search_one_attempt(image_bytes, primary_face.encoding)
+        if hard_error:
+            yield _event("search", "Searching the web for matching posts", "error", message=hard_error)
             return
-        except NoMatchesFoundError as exc:
-            yield _event(
-                "search", "Searching the web for matching posts", "error",
-                message=f"{exc} (tried both the cropped face and the full photo.)",
-            )
-            return
-        except (ImageUploadError, SearchApiError, ReverseSearchError) as exc:
-            yield _event("search", "Searching the web for matching posts", "error", message=str(exc))
-            return
-    except (ImageUploadError, SearchApiError, ReverseSearchError) as exc:
-        yield _event("search", "Searching the web for matching posts", "error", message=str(exc))
-        return
+        raw_matches = full_raw
+        rejected = rejected + full_rejected
+        passed = full_passed
 
+    engines_used = sorted({m.get("search_engine") for m in raw_matches if m.get("search_engine")})
     yield _event(
         "search",
         "Searching the web for matching posts",
         "done",
-        data={"num_matches": len(matches), "matches": matches, "search_mode": search_mode},
+        data={
+            "num_matches": len(raw_matches),
+            "matches": raw_matches,
+            "search_mode": search_mode,
+            "search_engines": engines_used,
+        },
+    )
+
+    yield _event("face_verify", "Verifying faces in search results", "running")
+    for vm in passed + rejected:
+        yield _event(
+            "face_verify_candidate",
+            "Checking candidate",
+            "done" if vm.passed else "rejected",
+            data={
+                "source": vm.original_match.get("source"),
+                "title": vm.original_match.get("title"),
+                "thumbnail": vm.original_match.get("thumbnail"),
+                "search_engine": vm.original_match.get("search_engine"),
+                "face_found": vm.face_found,
+                "face_similarity": vm.face_similarity,
+                "passed": vm.passed,
+                "reject_reason": vm.reject_reason,
+            },
+        )
+
+    if not passed:
+        yield _event(
+            "face_verify",
+            "Verifying faces in search results",
+            "error",
+            message=(
+                f"None of the {len(rejected)} search result(s) (cropped face + full photo) "
+                f"contained a matching face (threshold: {FACE_SIMILARITY_THRESHOLD}%)."
+                if rejected
+                else "No search results were found at all (tried both the cropped face and the full photo)."
+            ),
+        )
+        return
+
+    yield _event(
+        "face_verify",
+        "Verifying faces in search results",
+        "done",
+        data={
+            "total_checked": len(passed) + len(rejected),
+            "passed_count": len(passed),
+            "rejected_count": len(rejected),
+            "best_similarity": max(vm.face_similarity for vm in passed),
+            "verified_matches": [vm.original_match for vm in passed],
+        },
     )
 
 

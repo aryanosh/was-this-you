@@ -90,7 +90,7 @@ function drawFaceBoxes(boxes) {
 
 // ---- Step indicator (one pill per pipeline stage) ----
 
-const STEP_ORDER = ["upload", "detect", "deepfake", "search", "fetch", "fingerprint", "chain_submit", "reverify"];
+const STEP_ORDER = ["upload", "detect", "deepfake", "search", "face_verify", "fetch", "fingerprint", "chain_submit", "reverify"];
 
 function resetStepIndicator() {
   STEP_ORDER.forEach((s) => {
@@ -135,12 +135,13 @@ function markAllStepsDone() {
 
 // ---- Trace log (append-only chain of thought) ---------------------------
 
-const STAGE_ORDER = ["detect", "deepfake", "search", "fetch", "fingerprint", "chain_submit", "reverify"];
+const STAGE_ORDER = ["detect", "deepfake", "search", "face_verify", "fetch", "fingerprint", "chain_submit", "reverify"];
 
 const RUNNING_TEXT = {
   detect: "Detecting the face in the photo…",
   deepfake: "Checking whether the image is AI-generated…",
   search: "Searching the web for matching posts…",
+  face_verify: "Verifying faces in the search results…",
   fetch: "Fetching the matched post's content…",
   fingerprint: "Computing a SHA-256 fingerprint…",
   chain_submit: "Writing the fingerprint to the blockchain…",
@@ -153,8 +154,9 @@ const STAGE_EXPLAINER = {
   upload: "Loading the photo into the pipeline.",
   detect: "Finds the face and extracts a unique 128-number biometric signature from it.",
   deepfake: "Sanity-checks that the photo itself isn't AI-generated before trusting anything found from it.",
-  search: "Runs a live reverse-image search using only the cropped face, not the whole photo.",
-  fetch: "Downloads the real image and page behind the top match, and re-checks the face against the original.",
+  search: "Runs a live reverse-image search (Yandex first, Google Lens as fallback) using the cropped face.",
+  face_verify: "Downloads every search result and re-checks it against the original face — rejects anything that isn't actually the same person.",
+  fetch: "Downloads the real image and page behind a verified match, and re-checks the face against the original.",
   fingerprint: "Turns the downloaded content into two tamper-evident fingerprints: an exact hash and a visual hash.",
   chain_submit: "Writes the fingerprint to the blockchain as a permanent, public, timestamped record.",
   reverify: "Independently re-downloads, re-hashes, and re-reads the chain to prove the record hasn't changed.",
@@ -208,12 +210,28 @@ function settleUploadEntryIfPresent() {
   entry.querySelector(".trace-text").textContent = "Photo uploaded.";
 }
 
+const ENGINE_LABELS = {
+  yandex: "Yandex",
+  bing_reverse_image: "Bing Reverse Image",
+  google_lens: "Google Lens",
+};
+
+function engineListLabel(engines) {
+  if (!engines || !engines.length) return null;
+  return engines.map((e) => ENGINE_LABELS[e] || e).join(" + ");
+}
+
 function doneText(stage, data) {
   switch (stage) {
     case "detect":
       return data.num_faces === 1 ? "Detected 1 face." : `Detected ${data.num_faces} faces; searching with the largest one.`;
-    case "search":
-      return `Found ${data.num_matches} matching post${data.num_matches === 1 ? "" : "s"}. Using the top result.`;
+    case "search": {
+      const engineLabel = engineListLabel(data.search_engines);
+      const engineNote = engineLabel ? ` via ${engineLabel}` : "";
+      return `Found ${data.num_matches} raw visual match${data.num_matches === 1 ? "" : "es"}${engineNote} — verifying faces next.`;
+    }
+    case "face_verify":
+      return `${data.passed_count} of ${data.total_checked} candidate${data.total_checked === 1 ? "" : "s"} confirmed as the same face.`;
     case "fetch": {
       const skipped = (data.attempts_tried || 1) - 1;
       const suffix = skipped > 0 ? ` (after skipping ${skipped} unreachable match${skipped === 1 ? "" : "es"})` : "";
@@ -263,11 +281,46 @@ function searchDetailHtml(data) {
   const domains = new Set(matches.map((m) => hostnameOf(m.link) || m.source).filter(Boolean));
   const modeNote =
     data.search_mode === "full_image"
-      ? `<div class="match-stats">Found using the full photo (the cropped face alone returned no matches).</div>`
+      ? `<div class="match-stats">Found using the full photo (the cropped face alone returned no verified matches).</div>`
       : "";
-  const stats = `<div class="match-stats">${matches.length} visual match${matches.length === 1 ? "" : "es"} found across ${domains.size} platform${domains.size === 1 ? "" : "s"}.</div>`;
-  const grid = `<div class="match-grid">${matches.map((m, i) => matchCardHtml(m, i === 0)).join("")}</div>`;
-  return modeNote + stats + grid;
+  const engineLabelForDetail = engineListLabel(data.search_engines);
+  const engineNote = engineLabelForDetail
+    ? engineLabelForDetail === "Google Lens"
+      ? `<div class="match-stats">Found via Google Lens (Yandex/Bing returned no matches, or no IMGBB_API_KEY is configured).</div>`
+      : `<div class="match-stats">Found via ${engineLabelForDetail}.</div>`
+    : "";
+  const stats = `<div class="match-stats">${matches.length} raw visual match${matches.length === 1 ? "" : "es"} found across ${domains.size} platform${domains.size === 1 ? "" : "s"} — not yet face-verified.</div>`;
+  const grid = `<div class="match-grid">${matches.map((m) => matchCardHtml(m, false)).join("")}</div>`;
+  return modeNote + engineNote + stats + grid;
+}
+
+function faceVerifyCandidateLineHtml(c) {
+  const domain = c.source || c.title || "unknown source";
+  const engineTag = c.search_engine ? ` [${ENGINE_LABELS[c.search_engine] || c.search_engine}]` : "";
+  let statusText;
+  if (!c.face_found) {
+    const reason = c.reject_reason && c.reject_reason.toLowerCase().includes("download")
+      ? "couldn't download image"
+      : "no face found";
+    statusText = `${reason} → REJECTED`;
+  } else if (c.passed) {
+    statusText = `${c.face_similarity}% → CONFIRMED`;
+  } else {
+    statusText = `${c.face_similarity}% → REJECTED`;
+  }
+  const cls = c.passed ? "fa-ok" : "fa-blocked";
+  const icon = c.passed ? "✓" : "✕";
+  return `<div class="fetch-attempt-line ${cls}"><span class="fa-icon">${icon}</span>${escapeHtml(domain)}${escapeHtml(engineTag)} → ${escapeHtml(statusText)}</div>`;
+}
+
+function faceVerifyCandidatesListHtml(candidates) {
+  if (!candidates.length) return "";
+  return `<div class="fetch-attempts">${candidates.map(faceVerifyCandidateLineHtml).join("")}</div>`;
+}
+
+function faceVerifyDetailHtml(data) {
+  const summary = `<div class="match-stats">${data.passed_count} of ${data.total_checked} candidate${data.total_checked === 1 ? "" : "s"} confirmed as the same face (best match: ${data.best_similarity}%).</div>`;
+  return faceVerifyCandidatesListHtml(currentFaceVerifyCandidates) + summary;
 }
 
 function detectDetailHtml(data) {
@@ -420,6 +473,7 @@ function verdictDetailHtml(data) {
 let fetchedMeta = null; // { image_url, source_url, caption, scraped_at }
 let originalPerceptualHash = null;
 let currentFetchAttempts = [];
+let currentFaceVerifyCandidates = [];
 
 function showReverifyPanel(originalCombinedHash) {
   if (!fetchedMeta) return;
@@ -578,12 +632,22 @@ function handleStageEvent(evt) {
     return;
   }
 
+  if (stage === "face_verify_candidate") {
+    currentFaceVerifyCandidates.push(data);
+    const faceVerifyEntry = entryEl("face_verify");
+    if (faceVerifyEntry) {
+      faceVerifyEntry.querySelector(".trace-detail").innerHTML = faceVerifyCandidatesListHtml(currentFaceVerifyCandidates);
+    }
+    return;
+  }
+
   if (!STAGE_ORDER.includes(stage)) return;
 
   if (status === "running") {
     settleUploadEntryIfPresent();
     markStepActive(stage);
     if (stage === "fetch") currentFetchAttempts = [];
+    if (stage === "face_verify") currentFaceVerifyCandidates = [];
     appendEntry(stage);
     return;
   }
@@ -602,7 +666,8 @@ function handleStageEvent(evt) {
     originalPerceptualHash = data.perceptual_hash || null;
   }
   if (status === "error") {
-    settleEntry(stage, "error", message || `"${label}" failed.`, "");
+    const errorDetailHtml = stage === "face_verify" ? faceVerifyCandidatesListHtml(currentFaceVerifyCandidates) : "";
+    settleEntry(stage, "error", message || `"${label}" failed.`, errorDetailHtml);
     markStepErrored(stage);
     showError(`Pipeline stopped at "${label}": ${message || "unknown error"}`);
     return;
@@ -616,6 +681,7 @@ function handleStageEvent(evt) {
     if (stage === "detect") detailHtml = detectDetailHtml(data);
     if (stage === "deepfake") detailHtml = deepfakeDetailHtml(data);
     if (stage === "search") detailHtml = searchDetailHtml(data);
+    if (stage === "face_verify") detailHtml = faceVerifyDetailHtml(data);
     if (stage === "fetch") detailHtml = fetchDetailHtml(data);
     if (stage === "fingerprint") detailHtml = fingerprintDetailHtml(data);
     if (stage === "chain_submit") detailHtml = chainSubmitDetailHtml(data);
@@ -653,6 +719,7 @@ form.addEventListener("submit", async (e) => {
   fetchedMeta = null;
   originalPerceptualHash = null;
   currentFetchAttempts = [];
+  currentFaceVerifyCandidates = [];
   resetStepIndicator();
 
   const file = fileInput.files[0];
@@ -670,7 +737,7 @@ form.addEventListener("submit", async (e) => {
     await streamPipeline("/api/pipeline/detect-and-search", { method: "POST", body: fd }, (evt) => {
       handleStageEvent(evt);
       if (evt.stage === "detect" && evt.status === "done") faceEncoding = evt.data.face_encoding;
-      if (evt.stage === "search" && evt.status === "done") allMatches = evt.data.matches;
+      if (evt.stage === "face_verify" && evt.status === "done") allMatches = evt.data.verified_matches;
     });
   } catch (err) {
     showError(`Request failed: ${err.message}`);

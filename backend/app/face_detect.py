@@ -142,11 +142,20 @@ def compare_faces(encoding_a: list[float], encoding_b: list[float], match_thresh
     this embedding space is a different, uncalibrated metric that can report
     misleadingly high scores for two different people's faces.
 
-    This instead computes the real Euclidean distance and converts it to a
-    percentage using a two-piece curve (the same shape commonly used by the
-    face_recognition community for exactly this purpose) so the match
-    threshold itself lands at 50%, confidently-same faces land solidly above
-    80%, and clearly-different faces drop toward 0%.
+    This computes the real Euclidean distance and converts it to a
+    percentage via plain linear interpolation on each side of the match
+    threshold (0 distance -> 100%, threshold -> 50%, and down to 0% by
+    double the threshold) -- deliberately NOT the steeper curve tried
+    earlier, which bent the sub-threshold half upward with an extra
+    ``** 0.2`` boost term. That boost was found, via a real false positive
+    in live testing, to compress nearly the entire genuinely-uncertain
+    0.5-0.6 distance range into a deceptively confident 82-90% score: a
+    distance of 0.5446 between two actually-different people (confirmed by
+    the photo's owner) came back as 82.8% under that curve -- read as a
+    solid match despite being a borderline case by the underlying model's
+    own standard. Plain linear interpolation reports that same distance as
+    ~54.6%, correctly landing just under a 55% pass threshold instead of
+    comfortably above it.
     """
     a = np.asarray(encoding_a, dtype=np.float64)
     b = np.asarray(encoding_b, dtype=np.float64)
@@ -156,9 +165,7 @@ def compare_faces(encoding_a: list[float], encoding_b: list[float], match_thresh
         spread = 1.0 - match_threshold
         confidence = (1.0 - distance) / (spread * 2.0)
     else:
-        spread = match_threshold
-        linear_val = 1.0 - (distance / (spread * 2.0))
-        confidence = linear_val + (1.0 - linear_val) * ((linear_val - 0.5) * 2.0) ** 0.2
+        confidence = 1.0 - (distance / (match_threshold * 2.0))
 
     confidence = max(0.0, min(1.0, confidence))
     return round(confidence * 100.0, 1)

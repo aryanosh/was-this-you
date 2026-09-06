@@ -28,6 +28,12 @@ def get_env(name: str, *, required: bool = False) -> str | None:
 
 SERPAPI_KEY = get_env("SERPAPI_KEY")
 
+# Optional. Unlocks Yandex/Bing reverse-image search (both need a real public
+# image URL, which SerpApi's own upload endpoint doesn't provide) by getting
+# one from a free imgbb.com account. Without it, search falls back to
+# Google Lens only -- exactly the pre-existing behavior.
+IMGBB_API_KEY = get_env("IMGBB_API_KEY")
+
 # CHAIN_RPC_URL/CHAIN_PRIVATE_KEY are the current names; HARDHAT_RPC_URL/
 # HARDHAT_PRIVATE_KEY are kept as fallbacks for backward compatibility with
 # existing .env files that predate the Sepolia support.

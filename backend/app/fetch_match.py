@@ -140,12 +140,35 @@ def fetch_match_content(match: dict) -> FetchedMatch:
 
     `match` is expected to be one of the dicts returned by
     reverse_search.reverse_image_search (SerpApi's visual_matches shape).
+
+    Tries the full-size `image` URL first, falling back to `thumbnail` if
+    that specific URL is dead/blocked/unreachable (not just if `image` is
+    entirely absent). This matters in practice: platforms like Instagram
+    that block direct hotlinking of their own CDN's full-size image often
+    still leave the search engine's own cached thumbnail URL (a different
+    host entirely) fetchable, and face_verify.py already proved a thumbnail
+    downloads fine and contains a real face -- so a candidate shouldn't be
+    given up on just because its higher-resolution URL alone failed.
     """
-    image_url = match.get("image") or match.get("thumbnail")
-    if not image_url:
+    image_candidates = []
+    for url in (match.get("image"), match.get("thumbnail")):
+        if url and url not in image_candidates:
+            image_candidates.append(url)
+    if not image_candidates:
         raise ContentFetchError("Selected match has no image URL to fetch.")
 
-    image_bytes = fetch_image_bytes(image_url)
+    image_bytes = None
+    image_url = None
+    last_exc: ContentFetchError | None = None
+    for candidate_url in image_candidates:
+        try:
+            image_bytes = fetch_image_bytes(candidate_url)
+            image_url = candidate_url
+            break
+        except (DeadLinkError, BlockedError, UnsupportedContentError, ContentFetchError) as exc:
+            last_exc = exc
+    if image_bytes is None:
+        raise last_exc
 
     link = match.get("link")
     fallback_title = match.get("title")

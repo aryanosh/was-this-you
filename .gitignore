@@ -19,6 +19,9 @@ npm-debug.log*
 # Uploaded/scratch images from local pipeline runs
 backend/uploads/
 backend/scratch/
+*.jpeg
+*.jpg
+*.png
 
 # OS / editor
 .DS_Store
