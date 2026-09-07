@@ -64,21 +64,6 @@ fileInput.addEventListener("change", () => {
   clearOverlay();
 });
 
-async function loadSamplePhoto(url, filename) {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    const file = new File([blob], filename, { type: "image/jpeg" });
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    fileInput.files = dt.files;
-    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
-  } catch (err) {
-    showError(`Could not load demo photo: ${err.message}`);
-  }
-}
-document.getElementById("load-sample-vk")?.addEventListener("click", () => loadSamplePhoto("/VK.jpg", "VK.jpg"));
 
 function drawFaceBoxes(boxes) {
   if (!previewOverlay || !previewImg.naturalWidth) return;
