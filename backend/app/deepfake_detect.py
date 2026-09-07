@@ -18,11 +18,14 @@ caller (pipeline.py) always gets a `DeepfakeResult` back and continues.
 from __future__ import annotations
 
 import io
+import logging
 from dataclasses import dataclass
 
 from PIL import Image, UnidentifiedImageError
 
 MODEL_NAME = "dima806/deepfake_vs_real_image_detection"
+
+logger = logging.getLogger(__name__)
 
 
 class DeepfakeDetectionError(Exception):
@@ -69,6 +72,21 @@ def _get_pipeline():
     except Exception:
         _load_failed = True
         return None
+
+
+def warm_up() -> None:
+    """Pre-load the deepfake detection model so the first real request doesn't
+    pay the cold-load cost (~350 MB download + model init). Called once at
+    server startup via the FastAPI lifespan handler."""
+    logger.info("Pre-warming deepfake detection model (%s)...", MODEL_NAME)
+    clf = _get_pipeline()
+    if clf is not None:
+        logger.info("Deepfake model loaded successfully.")
+    else:
+        logger.warning(
+            "Deepfake model could not be loaded (missing torch/transformers, "
+            "no network, or download failure). Detection will be skipped at runtime."
+        )
 
 
 def _neutral_result(warning: str) -> DeepfakeResult:

@@ -36,6 +36,7 @@ from app.reverse_search import (
     NoMatchesFoundError,
     ReverseSearchError,
     SearchApiError,
+    last_search_info,
     reverse_image_search,
 )
 from app.chain_client import (
@@ -70,14 +71,17 @@ def _search_one_attempt(
     try:
         raw_matches = reverse_image_search(image_bytes)
     except NoMatchesFoundError:
-        return [], [], [], None
+        return [], [], [], None, {}
     except MissingApiKeyError as exc:
-        return [], [], [], str(exc)
+        return [], [], [], str(exc), {}
     except (ImageUploadError, SearchApiError, ReverseSearchError) as exc:
-        return [], [], [], str(exc)
+        return [], [], [], str(exc), {}
 
+    # Capture search metadata immediately after the call, before any other
+    # search call overwrites it.
+    search_meta = dict(last_search_info)
     passed, rejected = verify_candidates(raw_matches, original_encoding)
-    return raw_matches, passed, rejected, None
+    return raw_matches, passed, rejected, None, search_meta
 
 
 async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
@@ -134,7 +138,7 @@ async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
     # a crop that returns matches of the wrong person must not be accepted
     # just because Google Lens returned "something".
     search_mode = "face_crop"
-    raw_matches, passed, rejected, hard_error = _search_one_attempt(cropped_face_bytes, primary_face.encoding)
+    raw_matches, passed, rejected, hard_error, search_meta = _search_one_attempt(cropped_face_bytes, primary_face.encoding)
     if hard_error:
         yield _event("search", "Searching the web for matching posts", "error", message=hard_error)
         return
@@ -152,13 +156,34 @@ async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
             ),
         )
         search_mode = "full_image"
-        full_raw, full_passed, full_rejected, hard_error = _search_one_attempt(image_bytes, primary_face.encoding)
+        full_raw, full_passed, full_rejected, hard_error, search_meta = _search_one_attempt(image_bytes, primary_face.encoding)
         if hard_error:
             yield _event("search", "Searching the web for matching posts", "error", message=hard_error)
             return
         raw_matches = full_raw
         rejected = rejected + full_rejected
         passed = full_passed
+
+    # Emit an explicit fallback warning when running in reduced-accuracy mode
+    # (Google Lens only) so the frontend and logs make it visible.
+    reduced_accuracy = search_meta.get("reduced_accuracy", False)
+    fallback_reason = search_meta.get("fallback_reason")
+    if reduced_accuracy and fallback_reason:
+        yield _event(
+            "search_fallback",
+            "Reduced accuracy mode",
+            "warning",
+            data={
+                "reason": fallback_reason,
+                "engines_attempted": search_meta.get("engines_attempted", []),
+                "engines_succeeded": search_meta.get("engines_succeeded", []),
+                "engine_errors": search_meta.get("engine_errors", {}),
+            },
+            message=(
+                f"\u26a0 Reduced accuracy: only Google Lens was available for this search. "
+                f"Reason: {fallback_reason}. Results may match scenery instead of faces."
+            ),
+        )
 
     engines_used = sorted({m.get("search_engine") for m in raw_matches if m.get("search_engine")})
     yield _event(
@@ -170,6 +195,8 @@ async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
             "matches": raw_matches,
             "search_mode": search_mode,
             "search_engines": engines_used,
+            "reduced_accuracy": reduced_accuracy,
+            "fallback_reason": fallback_reason,
         },
     )
 
@@ -188,6 +215,7 @@ async def run_detect_and_search(image_bytes: bytes) -> AsyncIterator[dict]:
                 "face_similarity": vm.face_similarity,
                 "passed": vm.passed,
                 "reject_reason": vm.reject_reason,
+                "undetermined": vm.undetermined,
             },
         )
 

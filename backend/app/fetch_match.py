@@ -18,6 +18,8 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image, UnidentifiedImageError
 
+from app.safety_filter import is_safe_candidate
+
 REQUEST_TIMEOUT_S = 20
 # A real browser UA -- SerpApi-listed sites commonly block the default
 # `python-requests` UA outright.
@@ -150,6 +152,10 @@ def fetch_match_content(match: dict) -> FetchedMatch:
     downloads fine and contains a real face -- so a candidate shouldn't be
     given up on just because its higher-resolution URL alone failed.
     """
+    safe, reason = is_safe_candidate(match)
+    if not safe:
+        raise BlockedError(f"Candidate blocked by safety/spam filter: {reason}")
+
     image_candidates = []
     for url in (match.get("image"), match.get("thumbnail")):
         if url and url not in image_candidates:

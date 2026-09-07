@@ -16,10 +16,14 @@ ever reaches the fetch/fingerprint/blockchain stages.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import io
+import logging
+from dataclasses import dataclass, field
 
 import requests
+from PIL import Image
 
+from app.config import FACE_SIMILARITY_THRESHOLD
 from app.face_detect import (
     FaceDetectionError,
     NoFaceFoundError,
@@ -28,10 +32,13 @@ from app.face_detect import (
     detect_faces,
 )
 from app.fetch_match import BROWSER_HEADERS
+from app.safety_filter import domain_trust_bonus, is_safe_candidate
 
-FACE_SIMILARITY_THRESHOLD = 55.0  # percent -- reject below this
+logger = logging.getLogger(__name__)
+
 MAX_CANDIDATES_TO_CHECK = 15
 DOWNLOAD_TIMEOUT_S = 5
+MIN_FACE_DETECT_PX = 80  # HOG detector struggles below ~80px on shortest side
 
 
 @dataclass
@@ -41,12 +48,26 @@ class VerifiedMatch:
     face_found: bool
     passed: bool
     reject_reason: str | None
+    undetermined: bool = field(default=False)
 
 
-def _download_candidate_image(candidate: dict) -> bytes | None:
+def _image_short_side(image_bytes: bytes) -> int | None:
+    """Returns the shorter dimension (width or height) of the image, or
+    None if the bytes can't be decoded."""
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        return min(img.size)
+    except Exception:
+        return None
+
+
+def _download_candidate_image(candidate: dict, *, prefer_full: bool = False) -> bytes | None:
     """Downloads the thumbnail (fast, small); falls back to the full image
-    if the thumbnail fails. Never raises -- returns None on any failure."""
-    for key in ("thumbnail", "image"):
+    if the thumbnail fails. When `prefer_full` is True, tries the full-size
+    image URL first (used when a previous thumbnail was too small for face
+    detection). Never raises -- returns None on any failure."""
+    keys = ("image", "thumbnail") if prefer_full else ("thumbnail", "image")
+    for key in keys:
         url = candidate.get(key)
         if not url:
             continue
@@ -82,6 +103,19 @@ def verify_candidates(
     rejected: list[VerifiedMatch] = []
 
     for candidate in candidates[:MAX_CANDIDATES_TO_CHECK]:
+        safe, reason = is_safe_candidate(candidate)
+        if not safe:
+            rejected.append(
+                VerifiedMatch(
+                    original_match=candidate,
+                    face_similarity=None,
+                    face_found=False,
+                    passed=False,
+                    reject_reason=f"Filtered by content safety/spam filter: {reason}",
+                )
+            )
+            continue
+
         image_bytes = _download_candidate_image(candidate)
         if image_bytes is None:
             rejected.append(
@@ -91,6 +125,43 @@ def verify_candidates(
                     face_found=False,
                     passed=False,
                     reject_reason="Could not download a thumbnail or image for this candidate.",
+                )
+            )
+            continue
+
+        # Fix 5: check dimensions -- if the thumbnail is too small for
+        # reliable face detection, try the full-size image instead.
+        short_side = _image_short_side(image_bytes)
+        if short_side is not None and short_side < MIN_FACE_DETECT_PX:
+            logger.info(
+                "Thumbnail too small (%dpx) for %s — trying full-size image.",
+                short_side,
+                candidate.get("source") or candidate.get("link", "?"),
+            )
+            full_bytes = _download_candidate_image(candidate, prefer_full=True)
+            if full_bytes is not None:
+                full_short = _image_short_side(full_bytes)
+                if full_short is not None and full_short >= MIN_FACE_DETECT_PX:
+                    image_bytes = full_bytes
+                    short_side = full_short
+                    logger.info("Using full-size image (%dpx).", full_short)
+                else:
+                    logger.info(
+                        "Full-size image still too small (%s px) — marking undetermined.",
+                        full_short,
+                    )
+
+        # If still too small after trying the full image, mark as undetermined
+        # rather than silently rejecting as "no face found".
+        if short_side is not None and short_side < MIN_FACE_DETECT_PX:
+            rejected.append(
+                VerifiedMatch(
+                    original_match=candidate,
+                    face_similarity=None,
+                    face_found=False,
+                    passed=False,
+                    reject_reason=f"Image too small for reliable face detection ({short_side}px).",
+                    undetermined=True,
                 )
             )
             continue
@@ -129,9 +200,14 @@ def verify_candidates(
                 )
             )
 
-    # Sort passed candidates by face similarity descending so that direct,
-    # high-confidence photographic matches (e.g. 95%+) are prioritized over
-    # lower-confidence artistic reproductions or sketches (e.g. 70-80%).
-    passed.sort(key=lambda vm: vm.face_similarity or 0.0, reverse=True)
+    # Sort passed candidates by composite score: face similarity + domain trust bonus
+    # so that verified matches on authoritative, legitimate platforms (YouTube,
+    # Wikipedia, Filmibeat, News18, etc.) are prioritized over obscure or spammy sites.
+    def _rank_score(vm: VerifiedMatch) -> float:
+        base = vm.face_similarity or 0.0
+        bonus = domain_trust_bonus(vm.original_match.get("link"))
+        return base + bonus
+
+    passed.sort(key=_rank_score, reverse=True)
 
     return passed, rejected

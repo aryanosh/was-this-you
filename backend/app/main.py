@@ -4,6 +4,8 @@ with a live status event per stage, and serves the frontend."""
 from __future__ import annotations
 
 import json
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -45,7 +47,22 @@ from app.reverse_search import (
 )
 from app.pipeline import run_detect_and_search, run_process_match
 
-app = FastAPI(title="Face -> Reverse Search -> Blockchain Verification Pipeline")
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Pre-warm heavy models at startup so the first user request doesn't
+    pay the cold-load cost."""
+    from app.deepfake_detect import warm_up
+    warm_up()
+    yield
+
+
+app = FastAPI(
+    title="Face -> Reverse Search -> Blockchain Verification Pipeline",
+    lifespan=lifespan,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _FRONTEND_DIR = _REPO_ROOT / "frontend"

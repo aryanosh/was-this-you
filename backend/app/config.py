@@ -43,3 +43,10 @@ CHAIN_RPC_URL = get_env("CHAIN_RPC_URL") or HARDHAT_RPC_URL
 CHAIN_PRIVATE_KEY = get_env("CHAIN_PRIVATE_KEY") or HARDHAT_PRIVATE_KEY
 BLOCK_EXPLORER_URL = get_env("BLOCK_EXPLORER_URL")
 CONTRACT_ADDRESS = get_env("CONTRACT_ADDRESS")
+
+# Face verification: minimum biometric similarity (0-100%) a search-result
+# candidate must reach to be accepted as the same person.  62% corresponds
+# to a Euclidean distance of ~0.46 in face_recognition's 128-d embedding
+# space — comfortably inside the library's own 0.6 "same person" threshold,
+# with margin against borderline false positives.
+FACE_SIMILARITY_THRESHOLD = float(get_env("FACE_SIMILARITY_THRESHOLD") or "62.0")

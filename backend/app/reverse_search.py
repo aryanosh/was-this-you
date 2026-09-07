@@ -40,12 +40,20 @@ from __future__ import annotations
 
 import io
 import itertools
+import logging
 from urllib.parse import urlparse
 
 import requests
 from PIL import Image
 
 from app.config import IMGBB_API_KEY, SERPAPI_KEY
+from app.safety_filter import is_safe_candidate
+
+logger = logging.getLogger(__name__)
+
+# Populated after every call to reverse_image_search() so callers (pipeline.py)
+# can inspect which engines actually ran and whether accuracy was degraded.
+last_search_info: dict = {}
 
 UPLOAD_URL = "https://serpapi.com/image"
 SEARCH_URL = "https://serpapi.com/search"
@@ -189,15 +197,18 @@ def _run_lens_search(image_id: str, api_key: str) -> dict:
     return data
 
 
-def _upload_to_temp_host(image_bytes: bytes) -> tuple[str | None, str | None]:
+def _upload_to_temp_host(image_bytes: bytes) -> tuple[str | None, str | None, str | None]:
     """Best-effort upload to imgbb for a real public URL that yandex_images
-    and bing_reverse_image can fetch. Returns (public_url, delete_url), both
-    None if IMGBB_API_KEY isn't set or the upload fails for any reason --
-    this must never raise, since it's an enhancement layered on top of the
-    Google-Lens-only path, not a hard requirement.
+    and bing_reverse_image can fetch. Returns (public_url, delete_url,
+    failure_reason), where failure_reason is None on success and a
+    human-readable string on any failure -- this must never raise, since
+    it's an enhancement layered on top of the Google-Lens-only path, not a
+    hard requirement.
     """
     if not IMGBB_API_KEY:
-        return None, None
+        reason = "IMGBB_API_KEY is not set — Yandex/Bing engines are disabled."
+        logger.warning(reason)
+        return None, None, reason
     try:
         resp = requests.post(
             IMGBB_UPLOAD_URL,
@@ -207,11 +218,23 @@ def _upload_to_temp_host(image_bytes: bytes) -> tuple[str | None, str | None]:
         )
         data = resp.json()
         if resp.status_code != 200 or not data.get("success"):
-            return None, None
+            reason = (
+                f"imgbb upload failed (HTTP {resp.status_code}): "
+                f"{data.get('error', {}).get('message', resp.text[:200])}"
+            )
+            logger.warning(reason)
+            return None, None, reason
         payload = data.get("data") or {}
-        return payload.get("url"), payload.get("delete_url")
-    except (requests.exceptions.RequestException, ValueError):
-        return None, None
+        logger.info("imgbb upload succeeded — Yandex/Bing engines are available.")
+        return payload.get("url"), payload.get("delete_url"), None
+    except requests.exceptions.RequestException as exc:
+        reason = f"imgbb upload network error ({exc.__class__.__name__}): {exc}"
+        logger.warning(reason)
+        return None, None, reason
+    except ValueError as exc:
+        reason = f"imgbb returned non-JSON response: {exc}"
+        logger.warning(reason)
+        return None, None, reason
 
 
 def _delete_temp_host_image(delete_url: str | None) -> None:
@@ -367,17 +390,39 @@ def reverse_image_search(image_bytes: bytes) -> list[dict]:
     "bing_reverse_image", or "google_lens") so callers/UI can show which
     engine found it. Raises NoMatchesFoundError if nothing is found at all
     -- callers must not substitute a placeholder result in that case.
+
+    After every call, the module-level `last_search_info` dict is updated
+    with metadata about which engines were attempted, which succeeded, and
+    whether the search fell back to reduced-accuracy mode.
     """
+    global last_search_info
     api_key = _require_api_key()
 
-    public_url, delete_url = _upload_to_temp_host(image_bytes)
+    engines_attempted: list[str] = []
+    engines_succeeded: list[str] = []
+    engine_errors: dict[str, str] = {}
+    fallback_reason: str | None = None
+    reduced_accuracy = False
+
+    public_url, delete_url, imgbb_failure = _upload_to_temp_host(image_bytes)
     merged: list[dict] = []
     if public_url:
         per_engine_results = []
-        for search_fn in (_run_yandex_search, _run_bing_reverse_image_search):
+        engine_names = ["yandex", "bing_reverse_image"]
+        search_fns = [_run_yandex_search, _run_bing_reverse_image_search]
+        for engine_name, search_fn in zip(engine_names, search_fns):
+            engines_attempted.append(engine_name)
             try:
-                per_engine_results.append(search_fn(public_url, api_key))
-            except SearchApiError:
+                results = search_fn(public_url, api_key)
+                per_engine_results.append(results)
+                if results:
+                    engines_succeeded.append(engine_name)
+                    logger.info("[%s] returned %d result(s).", engine_name, len(results))
+                else:
+                    logger.info("[%s] returned 0 results.", engine_name)
+            except SearchApiError as exc:
+                logger.warning("[%s] search failed: %s", engine_name, exc)
+                engine_errors[engine_name] = str(exc)
                 per_engine_results.append([])
 
         # Interleaved (round-robin across engines), not concatenated -- the
@@ -394,17 +439,65 @@ def reverse_image_search(image_bytes: bytes) -> list[dict]:
                 link = r.get("link")
                 if link and link in seen_links:
                     continue
+                safe, reason = is_safe_candidate(r)
+                if not safe:
+                    logger.info(
+                        "Dropping unsafe/spam candidate '%s' (%s): %s",
+                        r.get("source") or r.get("title") or "unknown",
+                        link,
+                        reason,
+                    )
+                    continue
                 if link:
                     seen_links.add(link)
                 merged.append(r)
         _delete_temp_host_image(delete_url)
+    else:
+        # imgbb failed — Yandex/Bing are completely unavailable.
+        fallback_reason = imgbb_failure or "imgbb upload failed (unknown reason)"
 
     if merged:
+        last_search_info = {
+            "engines_attempted": engines_attempted,
+            "engines_succeeded": engines_succeeded,
+            "engine_errors": engine_errors,
+            "fallback_reason": None,
+            "reduced_accuracy": False,
+        }
         return merged
+
+    # Falling back to Google Lens — explicitly loud about it.
+    if not fallback_reason:
+        if engine_errors:
+            fallback_reason = (
+                f"Yandex/Bing returned no results. Errors: "
+                + "; ".join(f"{k}: {v}" for k, v in engine_errors.items())
+            )
+        else:
+            fallback_reason = "Yandex/Bing returned no matches."
+
+    reduced_accuracy = True
+    engines_attempted.append("google_lens")
+    logger.warning(
+        "FALLBACK TO GOOGLE LENS — reduced accuracy mode. Reason: %s",
+        fallback_reason,
+    )
 
     image_id, _ = _upload_image(image_bytes, api_key)
     lens_data = _run_lens_search(image_id, api_key)
     lens_matches = lens_data.get("visual_matches") or []
+
+    if lens_matches:
+        engines_succeeded.append("google_lens")
+
+    last_search_info = {
+        "engines_attempted": engines_attempted,
+        "engines_succeeded": engines_succeeded,
+        "engine_errors": engine_errors,
+        "fallback_reason": fallback_reason,
+        "reduced_accuracy": reduced_accuracy,
+    }
+
     if not lens_matches:
         raise NoMatchesFoundError(
             "Reverse image search completed successfully (tried Yandex, Bing, "
@@ -413,7 +506,15 @@ def reverse_image_search(image_bytes: bytes) -> list[dict]:
 
     tagged = []
     for m in lens_matches:
+        if not is_safe_candidate(m)[0]:
+            continue
         m = dict(m)
         m.setdefault("search_engine", "google_lens")
         tagged.append(m)
+
+    if not tagged:
+        raise NoMatchesFoundError(
+            "Reverse image search completed successfully (tried Yandex, Bing, "
+            "and Google Lens) but all results were filtered out as spam/unsafe."
+        )
     return tagged

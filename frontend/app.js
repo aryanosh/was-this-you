@@ -64,6 +64,23 @@ fileInput.addEventListener("change", () => {
   clearOverlay();
 });
 
+async function loadSamplePhoto(url, filename) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const file = new File([blob], filename, { type: "image/jpeg" });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    fileInput.files = dt.files;
+    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+  } catch (err) {
+    showError(`Could not load demo photo: ${err.message}`);
+  }
+}
+document.getElementById("load-sample-vk")?.addEventListener("click", () => loadSamplePhoto("/VK.jpg", "VK.jpg"));
+document.getElementById("load-sample-b")?.addEventListener("click", () => loadSamplePhoto("/images.jpeg", "images.jpeg"));
+
 function drawFaceBoxes(boxes) {
   if (!previewOverlay || !previewImg.naturalWidth) return;
   previewOverlay.width = previewImg.clientWidth;
@@ -283,6 +300,9 @@ function searchDetailHtml(data) {
     data.search_mode === "full_image"
       ? `<div class="match-stats">Found using the full photo (the cropped face alone returned no verified matches).</div>`
       : "";
+  const reducedAccuracyBanner = data.reduced_accuracy
+    ? `<div class="reduced-accuracy-banner">⚠ Reduced accuracy mode — only Google Lens was available. ${escapeHtml(data.fallback_reason || "Yandex/Bing unavailable.")} Results may match scenery instead of faces.</div>`
+    : "";
   const engineLabelForDetail = engineListLabel(data.search_engines);
   const engineNote = engineLabelForDetail
     ? engineLabelForDetail === "Google Lens"
@@ -291,25 +311,35 @@ function searchDetailHtml(data) {
     : "";
   const stats = `<div class="match-stats">${matches.length} raw visual match${matches.length === 1 ? "" : "es"} found across ${domains.size} platform${domains.size === 1 ? "" : "s"} — not yet face-verified.</div>`;
   const grid = `<div class="match-grid">${matches.map((m) => matchCardHtml(m, false)).join("")}</div>`;
-  return modeNote + engineNote + stats + grid;
+  return reducedAccuracyBanner + modeNote + engineNote + stats + grid;
 }
 
 function faceVerifyCandidateLineHtml(c) {
   const domain = c.source || c.title || "unknown source";
   const engineTag = c.search_engine ? ` [${ENGINE_LABELS[c.search_engine] || c.search_engine}]` : "";
   let statusText;
-  if (!c.face_found) {
+  let cls;
+  let icon;
+  if (c.undetermined) {
+    statusText = `${c.reject_reason || "image too small"} → UNDETERMINED`;
+    cls = "fa-undetermined";
+    icon = "?";
+  } else if (!c.face_found) {
     const reason = c.reject_reason && c.reject_reason.toLowerCase().includes("download")
       ? "couldn't download image"
       : "no face found";
     statusText = `${reason} → REJECTED`;
+    cls = "fa-blocked";
+    icon = "✕";
   } else if (c.passed) {
     statusText = `${c.face_similarity}% → CONFIRMED`;
+    cls = "fa-ok";
+    icon = "✓";
   } else {
     statusText = `${c.face_similarity}% → REJECTED`;
+    cls = "fa-blocked";
+    icon = "✕";
   }
-  const cls = c.passed ? "fa-ok" : "fa-blocked";
-  const icon = c.passed ? "✓" : "✕";
   return `<div class="fetch-attempt-line ${cls}"><span class="fa-icon">${icon}</span>${escapeHtml(domain)}${escapeHtml(engineTag)} → ${escapeHtml(statusText)}</div>`;
 }
 
@@ -600,14 +630,15 @@ function handleStageEvent(evt) {
     return;
   }
 
-  if (stage === "search_retry") {
-    if (status === "skipped") {
+  if (stage === "search_retry" || stage === "search_fallback") {
+    if (status === "skipped" || status === "warning") {
       const div = document.createElement("div");
-      div.className = "trace-entry state-skipped trace-entry-minor";
+      const isWarning = stage === "search_fallback";
+      div.className = `trace-entry ${isWarning ? "state-skipped" : "state-skipped"} trace-entry-minor`;
       div.innerHTML = `
         <div class="trace-line">
-          <span class="marker">${MARKERS.skipped}</span>
-          <span class="trace-text">${escapeHtml(message || "Retrying with the full photo.")}</span>
+          <span class="marker">${isWarning ? "⚠" : MARKERS.skipped}</span>
+          <span class="trace-text">${escapeHtml(message || (isWarning ? "Reduced accuracy mode." : "Retrying with the full photo."))}</span>
         </div>
       `;
       traceEl.appendChild(div);
