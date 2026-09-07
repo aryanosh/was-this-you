@@ -27,9 +27,12 @@ Building an automated pipeline that traces face appearances across the web and c
 ## 🎯 Key Capabilities
 
 * **Contextual Face-Cropped Search**: Isolates the face bounding box with 50% contextual padding to focus search queries strictly on facial biometrics rather than background scenery.
-* **Multi-Engine Reverse Search**: Automatically routes through Yandex Images and Bing Reverse Image with Google Lens fallback for comprehensive face discovery.
-* **Stage 2.5 Biometric Verification Gate**: Downloads search candidate thumbnails, extracts facial landmarks, and evaluates biometric Euclidean distance against the source face—filtering out matches below 55% similarity and prioritizing high-confidence matches.
-* **ViT Deepfake Classification**: Employs an on-device Vision Transformer (`dima806/deepfake_vs_real_image_detection`) to compute real-time authenticity confidence before querying the web.
+* **Multi-Engine Reverse Search**: Automatically routes through Yandex Images and Bing Reverse Image with an explicit, logged fallback to Google Lens for comprehensive face discovery.
+* **Stage 2.5 Biometric Verification Gate**: Downloads search candidate thumbnails, extracts facial landmarks, and evaluates biometric Euclidean distance against the source face—rejecting candidates below 62% similarity (Euclidean distance $\le 0.46$).
+* **Multi-Tier Content Safety & Spam Moderation**: Strips explicit, abusive, or adult doorway keywords and hard-blocks malicious SEO scrapers across all search engines before results reach the UI or smart contract.
+* **Domain Authority Reputation Scoring**: Integrates a domain trust bonus (+15.0) for verified, authoritative public platforms (e.g. YouTube, Wikipedia, Wikimedia, Filmibeat) so legitimate sources outrank obscure spam doorway pages.
+* **Zero Cold-Start Model Pre-Warming**: FastAPI lifespan automatically pre-warms ViT model weights into memory at server startup, ensuring fast inference on the very first user scan.
+* **ViT Deepfake Classification**: Employs an on-device Vision Transformer (`dima806/deepfake_vs_real_image_detection`) on PyTorch to compute real-time authenticity confidence before querying the web.
 * **Dual Fingerprint Generation**: Produces a canonical SHA-256 hash (binding image bytes, URL, caption, and scrape timestamp) alongside a 64-bit DCT perceptual hash (pHash).
 * **Ethereum Sepolia Blockchain Anchoring**: Submits raw signed EIP-155 transactions to deploy and interact with `FingerprintRegistry.sol` on public testnet with verifiable public Etherscan transaction logs.
 * **Interactive Tamper Playground**: Built-in verification sandbox allowing live simulation of content or URL tampering to verify cryptographic immutability and visual similarity.
@@ -46,9 +49,10 @@ flowchart TD
     B --> C1[🛡️ ViT Deepfake / Synthetic Check<br/>Real-time Authenticity Score]
     B2 --> C[🌐 Reverse Image Search<br/>Yandex & Bing primary, Google Lens fallback]
     C1 -. Advisory signal .-> C
-    C --> V{🎯 Stage 2.5 Biometric Gate<br/>Face similarity ≥ 55%?}
+    C --> S[🛡️ Content Safety & Doorway Filter<br/>Purge explicit / spam domains]
+    S --> V{🎯 Stage 2.5 Biometric Gate<br/>Face similarity ≥ 62% + Domain Trust}
     V -- 0 matches from crop --> C2[🔁 Retry search with full photo]
-    C2 --> V
+    C2 --> S
     V -- Match passed --> D[📥 Fetch Top Verified Candidate<br/>Image bytes + OpenGraph metadata]
     D -- Blocked / 403 --> D2[⏭️ Auto-fallback to next verified candidate]
     D2 --> D
@@ -66,9 +70,10 @@ flowchart TD
 | Stage | Name | Technical Implementation |
 | :---: | :--- | :--- |
 | **1** | **Face Detection & Encoding** | Uses `dlib`'s HOG detector + a 128-dimensional ResNet model via `face_recognition`. Generates facial landmarks, bounding boxes, and an invariant embedding vector. |
-| **1.5**| **Deepfake / AI-Generated Check** | Evaluates the face using a pre-trained Vision Transformer (`dima806/deepfake_vs_real_image_detection`) on PyTorch. Outputs an advisory confidence score (e.g. `Real: 99%`). |
+| **1.5**| **Deepfake / AI-Generated Check** | Evaluates the face using a pre-trained Vision Transformer (`dima806/deepfake_vs_real_image_detection`) on PyTorch. Pre-warmed at server startup; outputs an authenticity score (e.g. `Real: 99%`). |
 | **2** | **Face-Cropped Multi-Search** | Encodes the cropped face as JPEG bytes. Queries **Yandex Images** and **Bing Reverse Image** via SerpApi (utilizing ephemeral auto-deleting imgbb hosting for image URL access) with **Google Lens** as a fallback. |
-| **2.5**| **Biometric Verification Gate** | Downloads thumbnails of all candidates, detects faces in each, and evaluates biometric Euclidean distance against the original face. **Candidates below 55% similarity are rejected immediately.** |
+| **2.2**| **Content Safety & Domain Filter** | Filters out adult, offensive, and explicit doorway keywords and blocks known scraper doorway domains before candidate evaluation. |
+| **2.5**| **Biometric Gate & Domain Authority** | Downloads thumbnails of all candidates, extracts facial embeddings, evaluates biometric Euclidean distance against the original face (filtering out candidates below 62% similarity), and ranks candidates by composite score ($\text{Face Similarity} + \text{Domain Trust Bonus}$). |
 | **3** | **Content & Provenance Ingestion** | Ingests full-resolution image bytes and parses Open Graph / Twitter Card metadata. Re-measures the face similarity between the original photo and the matched post. |
 | **4** | **Dual Fingerprinting** | Computes: <br>1. **SHA-256 Image Hash** (raw payload) <br>2. **Canonical Combined Hash**: `SHA-256({image_hash, url, caption, scraped_at})` <br>3. **Perceptual Hash (pHash)**: 64-bit DCT frequency fingerprint via `imagehash`. |
 | **5** | **Smart Contract Registration** | Signs an EIP-155 raw transaction with `web3.py` and writes the combined hash to `FingerprintRegistry.sol`. Emits indexed event logs with gas profiling. |
@@ -207,7 +212,14 @@ Visit **`http://127.0.0.1:8000`** in your browser.
 
 ## 🧪 Testing
 
-### Smart Contract Test Suite (Mocha/Chai)
+### 1. Backend & Pipeline Unit Test Suite (pytest)
+```powershell
+cd backend
+.venv\Scripts\python.exe -m pytest tests
+```
+*Tests coverage: biometric Euclidean distance thresholds (62% boundary), low-res edge cases, multi-tier explicit/offensive keyword blocking, doorway domain blocklisting, and domain trust reputation bonuses (13 passing tests).*
+
+### 2. Smart Contract Test Suite (Mocha/Chai)
 ```bash
 cd contracts
 npx hardhat test
@@ -219,8 +231,9 @@ npx hardhat test
 ## 🛡️ Ethical Framework & Safety
 
 1. **Self-Provenance Only**: Designed for victims of digital impersonation to locate where their own portraits are being scraped and misused.
-2. **Ephemeral Public Cache**: When `IMGBB_API_KEY` is utilized for multi-engine routing, uploaded search images are programmed for immediate deletion upon search completion (and auto-expire within 60 seconds on the host).
-3. **No Biometric Data On-Chain**: To comply with data privacy standards (GDPR, EU AI Act), raw face coordinates and 128-dimensional biometric embeddings are **never** stored on the public ledger—only content fingerprints of publicly discovered web artifacts are anchored.
+2. **Multi-Tier Content Safety Defense**: Proactively purges adult keywords, explicit doorway stuffing, and blacklisted SEO scraper domains across English, Hindi/Hinglish, and Russian tokens so illicit or scam results can never reach the user or be anchored on-chain.
+3. **Ephemeral Public Cache**: When `IMGBB_API_KEY` is utilized for multi-engine routing, uploaded search images are programmed for immediate deletion upon search completion (and auto-expire within 60 seconds on the host).
+4. **No Biometric Data On-Chain**: To comply with data privacy standards (GDPR, EU AI Act), raw face coordinates and 128-dimensional biometric embeddings are **never** stored on the public ledger—only content fingerprints of publicly discovered web artifacts are anchored.
 
 ---
 
