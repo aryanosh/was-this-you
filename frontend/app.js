@@ -79,7 +79,6 @@ async function loadSamplePhoto(url, filename) {
   }
 }
 document.getElementById("load-sample-vk")?.addEventListener("click", () => loadSamplePhoto("/VK.jpg", "VK.jpg"));
-document.getElementById("load-sample-b")?.addEventListener("click", () => loadSamplePhoto("/images.jpeg", "images.jpeg"));
 
 function drawFaceBoxes(boxes) {
   if (!previewOverlay || !previewImg.naturalWidth) return;
